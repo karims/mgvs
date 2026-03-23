@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from mgvs.eval.benchmark import format_evaluation_report, load_benchmark_csv, run_evaluation
+from mgvs.eval.compare import compare_results_files, format_comparison_report, write_comparison_report
 from mgvs.eval.review import format_review_report, load_records, review_results, write_review_report
 from mgvs.solve.runner import SolveConfig, format_solve_result, select_llm_client, solve
 
@@ -49,6 +50,16 @@ def main(argv: list[str] | None = None) -> int:
     review_parser.add_argument("--results", required=True, help="Path to results (.json or .jsonl)")
     review_parser.add_argument("--traces", required=True, help="Path to traces (.json or .jsonl)")
     review_parser.add_argument("--output", required=True, help="Path to output review JSON")
+
+    compare_parser = subparsers.add_parser("compare", help="Compare baseline/candidate benchmark result files")
+    compare_parser.add_argument("--baseline", required=True, help="Path to baseline results (.json or .jsonl)")
+    compare_parser.add_argument(
+        "--candidate",
+        required=True,
+        action="append",
+        help="Path to candidate results (.json or .jsonl); repeat for multiple candidates",
+    )
+    compare_parser.add_argument("--output", required=True, help="Path to output comparison JSON")
 
     args = parser.parse_args(argv)
 
@@ -95,6 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         report = review_results(results, traces)
         write_review_report(report, args.output)
         print(format_review_report(report))
+        return 0
+
+    if args.command == "compare":
+        report = compare_results_files(
+            baseline_path=args.baseline,
+            candidate_paths=list(args.candidate),
+        )
+        write_comparison_report(report, args.output)
+        print(format_comparison_report(report))
         return 0
 
     print("mgvs bootstrap ready")
