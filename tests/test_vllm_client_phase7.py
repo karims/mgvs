@@ -1,0 +1,128 @@
+"""Phase 7 tests for OpenAI-compatible vLLM client integration."""
+
+import json
+import unittest
+from unittest.mock import patch
+
+from mgvs.config import VLLMRuntimeConfig
+from mgvs.llm.parser import parse_lss_output, parse_pct_output, parse_pt_output, parse_structured_json_object
+from mgvs.llm.vllm_client import VLLMClient
+
+
+class TestVLLMClientPhase7(unittest.TestCase):
+    """Validates structured generation and error fallback behavior."""
+
+    def test_generate_pt_success(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "symbolic_objects": {"x": {"kind": "scalar"}},
+                                    "current_equations": ["x+1=2"],
+                                    "domain_constraints": [],
+                                    "global_constraints": [],
+                                    "witness_parameters": {},
+                                    "open_goals": ["solve for x"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        client = VLLMClient(
+            runtime=VLLMRuntimeConfig(model_name="stub"),
+            transport=transport,
+        )
+        output = client.generate_pt("prompt")
+        parsed = parse_pt_output(output)
+
+        self.assertIn("x", parsed.symbolic_objects)
+        self.assertIn("x+1=2", parsed.current_equations)
+
+    def test_partial_json_recovery_from_wrapped_content(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Result:\n```json\n{\"strategy_tags\":[\"tag_a\"],\"open_goals\":[\"g1\"]}\n```"
+                        }
+                    }
+                ]
+            }
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_pct("prompt")
+        parsed = parse_pct_output(output)
+
+        self.assertEqual(parsed.strategy_tags, ["tag_a"])
+        self.assertEqual(parsed.open_goals, ["g1"])
+
+    def test_empty_response_fallback(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {"choices": [{"message": {"content": "   "}}]}
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_lss("prompt")
+
+        self.assertEqual(parse_lss_output(output), [])
+
+    def test_timeout_fallback(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            raise TimeoutError("timeout")
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_pct("prompt")
+        parsed = parse_pct_output(output)
+
+        self.assertEqual(parsed.strategy_tags, ["llm_fallback"])
+
+    def test_malformed_response_shape_fallback(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {"id": "no-choices"}
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_pt("prompt")
+        parsed = parse_pt_output(output)
+
+        self.assertEqual(parsed.current_equations, [])
+
+    def test_runtime_config_from_env(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "MGVS_VLLM_BASE_URL": "http://localhost:9000/v1",
+                "MGVS_VLLM_API_KEY": "k",
+                "MGVS_VLLM_MODEL_NAME": "m",
+                "MGVS_VLLM_TEMPERATURE": "0.2",
+                "MGVS_VLLM_MAX_TOKENS": "256",
+                "MGVS_VLLM_TIMEOUT": "11",
+            },
+            clear=False,
+        ):
+            cfg = VLLMRuntimeConfig.from_env()
+
+        self.assertEqual(cfg.base_url, "http://localhost:9000/v1")
+        self.assertEqual(cfg.api_key, "k")
+        self.assertEqual(cfg.model_name, "m")
+        self.assertEqual(cfg.temperature, 0.2)
+        self.assertEqual(cfg.max_tokens, 256)
+        self.assertEqual(cfg.timeout, 11.0)
+
+    def test_parser_recovery_helper(self) -> None:
+        wrapped = "prefix {\"actions\":[{\"action_type\":\"rewrite\"}]} suffix"
+        parsed = parse_structured_json_object(wrapped)
+        self.assertIn("actions", parsed)
+
+
+if __name__ == "__main__":
+    unittest.main()

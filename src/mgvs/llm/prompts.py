@@ -6,6 +6,10 @@ import json
 
 from mgvs.state.models import ReasoningState
 
+STAGE_PT = "pt"
+STAGE_PCT = "pct"
+STAGE_LSS = "lss"
+
 
 def _json_block(payload: dict[str, object]) -> str:
     """Render deterministic pretty JSON for prompt context blocks."""
@@ -104,3 +108,19 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         ],
     }
     return _json_block(contract)
+
+
+def build_stage_system_prompt(stage: str) -> str:
+    """Return stage-specific system instruction for structured generation."""
+
+    base = (
+        "You are a structured planning assistant. "
+        "Respond with JSON only and no markdown fences."
+    )
+    if stage == STAGE_PT:
+        return f"{base} Extract objects, equations, constraints, witnesses, and goals."
+    if stage == STAGE_PCT:
+        return f"{base} Propose concept/tactic tags and incremental goals."
+    if stage == STAGE_LSS:
+        return f"{base} Propose bounded candidate actions only."
+    return base

@@ -32,14 +32,62 @@ class PCTUpdate:
     added_constraints: list[str] = field(default_factory=list)
 
 
+def parse_structured_json_object(text: str) -> dict[str, Any]:
+    """Parse JSON object with best-effort recovery from mixed model text."""
+
+    stripped = text.strip()
+    if not stripped:
+        return {}
+
+    # Fast path for valid JSON object text.
+    try:
+        raw = json.loads(stripped)
+    except json.JSONDecodeError:
+        raw = None
+    if isinstance(raw, dict):
+        return raw
+
+    # Recover from markdown fences or prefixed/suffixed chatter by slicing
+    # the first balanced JSON object region.
+    start = stripped.find("{")
+    if start == -1:
+        return {}
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(stripped)):
+        ch = stripped[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "\"":
+                in_string = False
+            continue
+
+        if ch == "\"":
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = stripped[start : index + 1]
+                try:
+                    recovered = json.loads(candidate)
+                except json.JSONDecodeError:
+                    return {}
+                return recovered if isinstance(recovered, dict) else {}
+
+    return {}
+
+
 def _load_json_object(text: str) -> dict[str, Any]:
     """Parse JSON text into an object with safe fallback."""
 
-    try:
-        raw = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    return parse_structured_json_object(text)
 
 
 def _string_list(value: Any) -> list[str]:

@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from mgvs.state.models import ReasoningState
+
+if TYPE_CHECKING:
+    from mgvs.actions.models import CandidateAction
+
+LLMStage = Literal["pt", "pct", "lss"]
+
+
+class LLMClientError(RuntimeError):
+    """Typed exception for recoverable/unrecoverable LLM client failures."""
+
+
+@dataclass(frozen=True)
+class LLMRequestOptions:
+    """Runtime options for structured generation requests."""
+
+    temperature: float
+    max_tokens: int
+    timeout: float
 
 
 class PTClient(Protocol):
@@ -49,5 +68,5 @@ class PCTService(Protocol):
 class LSSService(Protocol):
     """State-aware LSS service boundary for higher-level orchestration."""
 
-    def propose(self, state: ReasoningState, depth: int) -> list[object]:
+    def propose(self, state: ReasoningState, depth: int) -> list["CandidateAction"]:
         """Return parsed LSS proposals for the given state/depth."""
