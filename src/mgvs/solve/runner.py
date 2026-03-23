@@ -17,20 +17,14 @@ from mgvs.search.controller import (
     StateCanonicalizer,
     run_search,
 )
+from mgvs.search.termination import terminal_states
+from mgvs.solve.answering import BeamAnswerDecision, select_answer_across_states
 from mgvs.state.models import ReasoningState, create_initial_state
 from mgvs.types import StateStatus
 from mgvs.verify.base import CombinedVerificationResult, CompositeVerifier
 from mgvs.verify.consistency import V0StateConsistencyVerifier
 from mgvs.verify.global_ import V0GlobalCompatibilityVerifier
 from mgvs.verify.local import V0LocalValidityVerifier
-
-TERMINAL_STATUSES: set[StateStatus] = {
-    StateStatus.SOLVED,
-    StateStatus.CONTRADICTION,
-    StateStatus.DEAD_END,
-    StateStatus.PARAMETRIC,
-}
-
 
 @dataclass(frozen=True)
 class SolveConfig:
@@ -50,6 +44,10 @@ class SolveResult:
     trace_summary: list[str]
     termination_reason: str
     depth_reached: int
+    predicted_answer: int | None = None
+    answer_status: str = "missing_answer"
+    supporting_state_ids: list[str] = field(default_factory=list)
+    supporting_trace_count: int = 0
     iteration_summaries: list[IterationSummary] = field(default_factory=list)
     verifier_rejections_by_level: dict[str, int] = field(default_factory=dict)
 
@@ -186,12 +184,16 @@ def solve(
         config=ControllerConfig(max_depth=cfg.max_depth, beam_width=cfg.beam_width),
     )
 
-    best_state = _select_best_terminal(controller_result)
+    best_state, answer_decision = _select_best_terminal(controller_result)
     return SolveResult(
         best_state=best_state,
         trace_summary=_summarize_trace(best_state),
         termination_reason=controller_result.termination_reason,
         depth_reached=controller_result.depth_reached,
+        predicted_answer=answer_decision.predicted_answer,
+        answer_status=answer_decision.answer_status,
+        supporting_state_ids=list(answer_decision.supporting_state_ids),
+        supporting_trace_count=answer_decision.supporting_trace_count,
         iteration_summaries=controller_result.iteration_summaries,
         verifier_rejections_by_level=dict(tracking_verifier.rejections_by_level),
     )
@@ -208,6 +210,8 @@ def format_solve_result(result: SolveResult) -> str:
         f"score: {state.score:.2f}",
         f"termination: {result.termination_reason}",
         f"depth reached: {result.depth_reached}",
+        f"answer status: {result.answer_status}",
+        f"predicted answer: {result.predicted_answer if result.predicted_answer is not None else 'NA'}",
         "derived facts:",
     ]
     if selected_facts:
@@ -230,13 +234,28 @@ def run() -> ReasoningState:
     return solve("Placeholder bootstrap problem.").best_state
 
 
-def _select_best_terminal(controller_result: ControllerResult) -> ReasoningState:
-    """Select highest scoring terminal state when available."""
+def _select_best_terminal(controller_result: ControllerResult) -> tuple[ReasoningState, BeamAnswerDecision]:
+    """Select representative final state using answer-aware terminal logic."""
 
-    terminals = [state for state in controller_result.final_beam if state.status in TERMINAL_STATUSES]
-    if terminals:
-        return max(terminals, key=lambda state: state.score)
-    return controller_result.best_state
+    candidates = terminal_states(controller_result.final_beam) or list(controller_result.final_beam)
+    decision = select_answer_across_states(candidates)
+
+    solved = [state for state in candidates if state.status == StateStatus.SOLVED]
+    if decision.predicted_answer is not None:
+        matched: list[ReasoningState] = []
+        target = str(decision.predicted_answer)
+        for state in solved:
+            for fact in state.derived_facts:
+                rhs = fact.split("=")[-1].strip()
+                if rhs == target:
+                    matched.append(state)
+                    break
+        if matched:
+            return max(matched, key=lambda state: state.score), decision
+
+    if solved:
+        return max(solved, key=lambda state: state.score), decision
+    return max(candidates, key=lambda state: state.score), decision
 
 
 def _summarize_trace(state: ReasoningState) -> list[str]:

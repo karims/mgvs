@@ -29,6 +29,12 @@ def is_terminal_state(state: ReasoningState) -> bool:
     return state.status in TERMINAL_STATUSES
 
 
+def terminal_states(states: list[ReasoningState]) -> list[ReasoningState]:
+    """Return terminal states from an arbitrary state list."""
+
+    return [state for state in states if is_terminal_state(state)]
+
+
 def is_high_priority_solved(state: ReasoningState) -> bool:
     """Return True when a solved state is marked high-priority."""
 

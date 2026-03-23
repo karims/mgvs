@@ -9,7 +9,6 @@ from pathlib import Path
 
 from mgvs.cli.main import main
 from mgvs.eval.benchmark import (
-    extract_numeric_prediction,
     format_evaluation_report,
     load_benchmark_csv,
     run_evaluation,
@@ -61,8 +60,8 @@ class TestEvalPhase9(unittest.TestCase):
             config=SolveConfig(target_type="competition"),
         )
 
-        prediction = extract_numeric_prediction(result)
-        self.assertIsNone(prediction)
+        self.assertIsNone(result.predicted_answer)
+        self.assertEqual(result.answer_status, "parametric")
 
     def test_trace_export_jsonl(self) -> None:
         problems = load_benchmark_csv(

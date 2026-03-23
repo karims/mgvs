@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import json
 import os
-import re
 from dataclasses import dataclass
 
 from mgvs.eval.metrics import EvaluationMetrics, ProblemEvaluation, compute_metrics
@@ -81,7 +80,7 @@ def run_evaluation(
 
     for problem in problems:
         result = solve(problem.problem_text, config=cfg, client=client)
-        predicted = extract_numeric_prediction(result)
+        predicted = float(result.predicted_answer) if result.predicted_answer is not None else None
 
         numeric_correct = False
         if predicted is not None and problem.expected_answer is not None:
@@ -128,30 +127,6 @@ def format_evaluation_report(report: EvaluationReport) -> str:
     return "\n".join(lines)
 
 
-def extract_numeric_prediction(result: SolveResult) -> float | None:
-    """Extract a numeric prediction from final state facts if available."""
-
-    # Prefer explicit equation-style derived facts, e.g. "x = 1".
-    for fact in reversed(result.best_state.derived_facts):
-        rhs = fact.split("=")[-1].strip()
-        parsed = _parse_numeric(rhs)
-        if parsed is not None:
-            return parsed
-
-    # Fallback: scan all derived facts and normalized form for any numeric token.
-    haystacks = list(result.best_state.derived_facts)
-    if result.best_state.normalized_form:
-        haystacks.append(result.best_state.normalized_form)
-
-    for text in reversed(haystacks):
-        for token in re.findall(r"[-+]?\d*\.?\d+", text):
-            parsed = _parse_numeric(token)
-            if parsed is not None:
-                return parsed
-
-    return None
-
-
 def _parse_numeric(value: str) -> float | None:
     """Parse numeric string safely; return None if unavailable."""
 
@@ -191,6 +166,10 @@ def _export_trace(*, problem_id: str, result: SolveResult, output_path: str) -> 
         "problem_id": problem_id,
         "status": result.best_state.status.value,
         "score": result.best_state.score,
+        "predicted_answer": result.predicted_answer,
+        "answer_status": result.answer_status,
+        "supporting_state_ids": list(result.supporting_state_ids),
+        "supporting_trace_count": result.supporting_trace_count,
         "termination_reason": result.termination_reason,
         "depth_reached": result.depth_reached,
         "trace_summary": list(result.trace_summary),
