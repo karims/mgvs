@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from mgvs.llm.base import DEFAULT_PCT_MAX_TACTICS, LSSContractVersion, PCTContractVersion, PTContractVersion
 from mgvs.state.models import ReasoningState
 
 STAGE_PT = "pt"
@@ -21,29 +22,34 @@ def build_pt_prompt(raw_problem: str, target_type: str) -> str:
     """Build PT prompt contract for extracting structured problem state."""
 
     contract = {
+        "contract": PTContractVersion,
         "task": "problem_translation",
         "input": {
             "raw_problem": raw_problem,
             "target_type": target_type,
         },
         "output_schema": {
-            "symbolic_objects": {"name": "descriptor"},
-            "current_equations": ["equation"],
-            "domain_constraints": ["constraint"],
-            "global_constraints": ["constraint"],
-            "witness_parameters": {"key": "value"},
-            "open_goals": ["goal"],
+            "unknowns": ["symbol"],
+            "targets": ["target"],
+            "facts": ["fact"],
+            "constraints": {
+                "domain": ["constraint"],
+                "global": ["constraint"],
+            },
+            "symbolic_objects": {"name": {"kind": "type", "attrs": {"key": "value"}}},
+            "equations": ["equation"],
         },
         "instructions": [
             "Return JSON only.",
-            "Use concise machine-friendly strings.",
+            "No free-form reasoning paragraphs.",
+            "Use short machine-friendly tokens.",
             "Do not include markdown fences.",
         ],
     }
     return _json_block(contract)
 
 
-def build_pct_prompt(state: ReasoningState) -> str:
+def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MAX_TACTICS) -> str:
     """Build PCT prompt contract for strategy and goal proposal."""
 
     context = {
@@ -54,17 +60,25 @@ def build_pct_prompt(state: ReasoningState) -> str:
         "strategy_tags": state.strategy_tags,
     }
     contract = {
+        "contract": PCTContractVersion,
         "task": "concept_tactic_proposal",
+        "constraints": {"max_tactics": max_tactics},
         "context": context,
         "output_schema": {
-            "strategy_tags": ["tag"],
-            "open_goals": ["goal"],
-            "added_facts": ["fact"],
-            "added_constraints": ["constraint"],
+            "strategy_tags": ["actionable_tag"],
+            "tactic_candidates": [
+                {
+                    "tag": "actionable_tag",
+                    "goal": "short_goal",
+                    "priority": 1,
+                }
+            ],
+            "focus_goals": ["goal"],
         },
         "instructions": [
             "Return JSON only.",
-            "Prefer generic tactics, not full proofs.",
+            "At most max_tactics tactic candidates.",
+            "Prefer tags/goals, avoid essays.",
         ],
     }
     return _json_block(contract)
@@ -81,6 +95,7 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "branch_assignments": state.branch_assignments,
     }
     contract = {
+        "contract": LSSContractVersion,
         "task": "local_step_synthesis",
         "context": context,
         "constraints": {
@@ -90,21 +105,26 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "output_schema": {
             "actions": [
                 {
-                    "action_type": "rewrite|substitute|...|prune",
+                    "action_type": "rewrite|substitute|eliminate|factor|expand|introduce_representation|hypothesize_witness|bind_witness|derive_constraint|detect_symmetry|branch|prune",
                     "title": "short title",
-                    "rationale": "short why",
+                    "rationale": "short why <= 20 words",
                     "inputs": ["item"],
                     "outputs": ["item"],
                     "added_facts": ["fact"],
                     "added_constraints": ["constraint"],
                     "branch_labels": ["label"],
-                    "metadata": {"key": "value"},
+                    "metadata": {
+                        "mark_solved": False,
+                        "mark_parametric": False,
+                        "prune_status": "dead_end|contradiction",
+                    },
                 }
             ]
         },
         "instructions": [
             "Return JSON only.",
-            "Propose partial next actions, not full derivations.",
+            "Bounded candidate actions only; no prose outside action fields.",
+            "Only include fields from output_schema.",
         ],
     }
     return _json_block(contract)

@@ -17,6 +17,12 @@ class ProblemEvaluation:
     depth_reached: int
     accepted_steps: int
     average_branch_fanout: float
+    solve_mode: str = "balanced"
+    fallback_used: bool = False
+    termination_reason: str = ""
+    answer_status: str = "missing_answer"
+    policy_trace: list[str] = field(default_factory=list)
+    strategy_tags: list[str] = field(default_factory=list)
     verifier_rejections_by_level: dict[str, int] = field(default_factory=dict)
 
 

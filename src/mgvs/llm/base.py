@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from mgvs.actions.models import CandidateAction
 
 LLMStage = Literal["pt", "pct", "lss"]
+PTContractVersion = "pt_v2"
+PCTContractVersion = "pct_v2"
+LSSContractVersion = "lss_v2"
+DEFAULT_PCT_MAX_TACTICS = 4
 
 
 class LLMClientError(RuntimeError):
@@ -24,6 +28,14 @@ class LLMRequestOptions:
     temperature: float
     max_tokens: int
     timeout: float
+
+
+@dataclass(frozen=True)
+class ParseIssue:
+    """Non-fatal parser issue for structured output recovery."""
+
+    stage: LLMStage
+    reason: str
 
 
 class PTClient(Protocol):

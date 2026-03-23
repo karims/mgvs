@@ -71,6 +71,7 @@ def run_evaluation(
     solve_config: SolveConfig | None = None,
     backend: str = "stub",
     export_traces_path: str | None = None,
+    export_results_path: str | None = None,
 ) -> EvaluationReport:
     """Evaluate solver over a benchmark set and return per-problem records."""
 
@@ -98,12 +99,20 @@ def run_evaluation(
                 depth_reached=result.depth_reached,
                 accepted_steps=len(result.best_state.accepted_steps),
                 average_branch_fanout=avg_fanout,
+                solve_mode=result.solve_mode,
+                fallback_used=result.fallback_used,
+                termination_reason=result.termination_reason,
+                answer_status=result.answer_status,
+                policy_trace=list(result.policy_trace),
+                strategy_tags=list(result.best_state.strategy_tags),
                 verifier_rejections_by_level=dict(result.verifier_rejections_by_level),
             )
         )
 
         if export_traces_path:
             _export_trace(problem_id=problem.problem_id, result=result, output_path=export_traces_path)
+        if export_results_path:
+            _export_result_record(records[-1], export_results_path)
 
     return EvaluationReport(records=records, metrics=compute_metrics(records))
 
@@ -205,3 +214,48 @@ def _export_trace(*, problem_id: str, result: SolveResult, output_path: str) -> 
         return
 
     raise ValueError("export_traces_path must end with .json or .jsonl")
+
+
+def _export_result_record(record: ProblemEvaluation, output_path: str) -> None:
+    """Write per-problem evaluation record as JSON or JSONL."""
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    payload = {
+        "problem_id": record.problem_id,
+        "status": record.status,
+        "expected_answer": record.expected_answer,
+        "predicted_answer": record.predicted_answer,
+        "numeric_correct": record.numeric_correct,
+        "depth_reached": record.depth_reached,
+        "accepted_steps": record.accepted_steps,
+        "average_branch_fanout": record.average_branch_fanout,
+        "solve_mode": record.solve_mode,
+        "fallback_used": record.fallback_used,
+        "termination_reason": record.termination_reason,
+        "answer_status": record.answer_status,
+        "policy_trace": list(record.policy_trace),
+        "strategy_tags": list(record.strategy_tags),
+        "verifier_rejections_by_level": dict(record.verifier_rejections_by_level),
+    }
+
+    if output_path.endswith(".jsonl"):
+        with open(output_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        return
+
+    if output_path.endswith(".json"):
+        existing: list[dict[str, object]] = []
+        if os.path.exists(output_path):
+            with open(output_path, "r", encoding="utf-8") as handle:
+                try:
+                    loaded = json.load(handle)
+                except json.JSONDecodeError:
+                    loaded = []
+            if isinstance(loaded, list):
+                existing = loaded
+        existing.append(payload)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(existing, handle, indent=2, sort_keys=True)
+        return
+
+    raise ValueError("export_results_path must end with .json or .jsonl")

@@ -20,6 +20,7 @@ class PTUpdate:
     global_constraints: list[str] = field(default_factory=list)
     witness_parameters: dict[str, Any] = field(default_factory=dict)
     open_goals: list[str] = field(default_factory=list)
+    derived_facts: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,15 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _first_present(obj: dict[str, Any], keys: list[str]) -> Any:
+    """Return the first present key from object or None."""
+
+    for key in keys:
+        if key in obj:
+            return obj[key]
+    return None
+
+
 def _dict_payload(value: Any) -> dict[str, Any]:
     """Convert unknown payload to dict[str, Any]."""
 
@@ -108,13 +118,27 @@ def parse_pt_output(text: str) -> PTUpdate:
     """Parse PT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
+    constraints_obj = obj.get("constraints")
+    domain_constraints: list[str] = []
+    global_constraints: list[str] = []
+    if isinstance(constraints_obj, dict):
+        domain_constraints = _string_list(_first_present(constraints_obj, ["domain", "local"]))
+        global_constraints = _string_list(_first_present(constraints_obj, ["global"]))
+    else:
+        domain_constraints = _string_list(_first_present(obj, ["domain_constraints"]))
+        global_constraints = _string_list(_first_present(obj, ["global_constraints"]))
+
+    open_goals = _string_list(_first_present(obj, ["open_goals", "targets", "focus_goals"]))
+    derived_facts = _string_list(_first_present(obj, ["facts", "derived_facts"]))
+
     return PTUpdate(
         symbolic_objects=_dict_payload(obj.get("symbolic_objects")),
-        current_equations=_string_list(obj.get("current_equations")),
-        domain_constraints=_string_list(obj.get("domain_constraints")),
-        global_constraints=_string_list(obj.get("global_constraints")),
-        witness_parameters=_dict_payload(obj.get("witness_parameters")),
-        open_goals=_string_list(obj.get("open_goals")),
+        current_equations=_string_list(_first_present(obj, ["current_equations", "equations"])),
+        domain_constraints=domain_constraints,
+        global_constraints=global_constraints,
+        witness_parameters=_dict_payload(_first_present(obj, ["witness_parameters", "witness"])),
+        open_goals=open_goals,
+        derived_facts=derived_facts,
     )
 
 
@@ -128,6 +152,8 @@ def apply_pt_update(state: ReasoningState, update: PTUpdate) -> ReasoningState:
     next_state.global_constraints.extend(update.global_constraints)
     next_state.witness_parameters.update(update.witness_parameters)
     next_state.open_goals.extend(update.open_goals)
+    for fact in update.derived_facts:
+        next_state.add_fact(fact)
     return next_state
 
 
@@ -135,11 +161,25 @@ def parse_pct_output(text: str) -> PCTUpdate:
     """Parse PCT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
+    strategy_tags = _string_list(_first_present(obj, ["strategy_tags", "tags"]))
+    open_goals = _string_list(_first_present(obj, ["open_goals", "focus_goals"]))
+    tactic_candidates = obj.get("tactic_candidates")
+    if isinstance(tactic_candidates, list):
+        for candidate in tactic_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            tag = str(candidate.get("tag", "")).strip()
+            goal = str(candidate.get("goal", "")).strip()
+            if tag:
+                strategy_tags.append(tag)
+            if goal:
+                open_goals.append(goal)
+
     return PCTUpdate(
-        strategy_tags=_string_list(obj.get("strategy_tags")),
-        open_goals=_string_list(obj.get("open_goals")),
-        added_facts=_string_list(obj.get("added_facts")),
-        added_constraints=_string_list(obj.get("added_constraints")),
+        strategy_tags=strategy_tags,
+        open_goals=open_goals,
+        added_facts=_string_list(_first_present(obj, ["added_facts", "facts"])),
+        added_constraints=_string_list(_first_present(obj, ["added_constraints", "constraints"])),
     )
 
 
@@ -161,6 +201,8 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
 
     obj = _load_json_object(text)
     raw_actions = obj.get("actions")
+    if raw_actions is None and {"action_type", "title"}.issubset(set(obj.keys())):
+        raw_actions = [obj]
     if not isinstance(raw_actions, list):
         return []
 
@@ -169,27 +211,33 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         if not isinstance(item, dict):
             continue
 
-        action_type_raw = str(item.get("action_type", "")).strip().lower()
+        action_type_raw = str(
+            _first_present(item, ["action_type", "type", "action"]) or ""
+        ).strip().lower()
         try:
             action_type = ActionType(action_type_raw)
         except ValueError:
             continue
 
-        title = str(item.get("title", "")).strip()
-        rationale = str(item.get("rationale", "")).strip()
-        if not title or not rationale:
+        title = str(_first_present(item, ["title", "name"]) or "").strip()
+        rationale = str(_first_present(item, ["rationale", "why"]) or "").strip()
+        if not title:
             continue
+        if not rationale:
+            rationale = "unspecified rationale"
 
         parsed.append(
             CandidateAction(
                 action_type=action_type,
                 title=title,
                 rationale=rationale,
-                inputs=_string_list(item.get("inputs")),
-                outputs=_string_list(item.get("outputs")),
-                added_facts=_string_list(item.get("added_facts")),
-                added_constraints=_string_list(item.get("added_constraints")),
-                branch_labels=_string_list(item.get("branch_labels")),
+                inputs=_string_list(_first_present(item, ["inputs"])),
+                outputs=_string_list(_first_present(item, ["outputs"])),
+                added_facts=_string_list(_first_present(item, ["added_facts", "facts"])),
+                added_constraints=_string_list(
+                    _first_present(item, ["added_constraints", "constraints"])
+                ),
+                branch_labels=_string_list(_first_present(item, ["branch_labels", "branches"])),
                 metadata=_dict_payload(item.get("metadata")),
             )
         )
