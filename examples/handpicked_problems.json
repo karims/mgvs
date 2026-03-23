@@ -1,10 +1,27 @@
 {
   "problems": [
     {
-      "id": "example-001",
-      "prompt": "Placeholder problem for MGVS bootstrap.",
-      "metadata": {
-        "difficulty": "unknown"
+      "id": "stub-linear-001",
+      "prompt": "Solve x + 1 = 2",
+      "expected": {
+        "status": "solved",
+        "trace_contains": ["subtract_one_both_sides"]
+      }
+    },
+    {
+      "id": "stub-branch-001",
+      "prompt": "Branch demo: analyze two sign cases",
+      "expected": {
+        "status": "solved",
+        "trace_contains": ["split_positive_negative", "finish_positive_case"]
+      }
+    },
+    {
+      "id": "stub-parametric-001",
+      "prompt": "Parametric demo: represent family of solutions",
+      "expected": {
+        "status": "parametric",
+        "trace_contains": ["introduce_parameterized_witness"]
       }
     }
   ]

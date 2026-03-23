@@ -37,6 +37,42 @@ class StubLLMClient(UnifiedLLMClient):
                 }
             )
 
+        if "branch demo" in raw_problem:
+            return json.dumps(
+                {
+                    "symbolic_objects": {"case_var": {"kind": "symbol"}},
+                    "current_equations": ["case_var^2 = 1"],
+                    "domain_constraints": [],
+                    "global_constraints": [],
+                    "witness_parameters": {},
+                    "open_goals": ["perform branch split"],
+                }
+            )
+
+        if "contradiction demo" in raw_problem:
+            return json.dumps(
+                {
+                    "symbolic_objects": {"z": {"kind": "scalar"}},
+                    "current_equations": ["z > 0 and z < 0"],
+                    "domain_constraints": [],
+                    "global_constraints": [],
+                    "witness_parameters": {},
+                    "open_goals": ["analyze contradiction branch"],
+                }
+            )
+
+        if "parametric demo" in raw_problem:
+            return json.dumps(
+                {
+                    "symbolic_objects": {"k": {"kind": "parameter"}},
+                    "current_equations": ["x = k"],
+                    "domain_constraints": [],
+                    "global_constraints": [],
+                    "witness_parameters": {},
+                    "open_goals": ["construct parametric witness"],
+                }
+            )
+
         return json.dumps(
             {
                 "symbolic_objects": {"obj_0": {"kind": "unknown"}},
@@ -50,14 +86,48 @@ class StubLLMClient(UnifiedLLMClient):
 
     def generate_pct(self, prompt: str) -> str:
         payload = _parse_prompt(prompt)
-        goals = payload.get("context", {}).get("open_goals", [])
+        context = payload.get("context", {}) if isinstance(payload, dict) else {}
+        raw_problem = str(context.get("raw_problem", "")).lower()
+        goals = context.get("open_goals", []) if isinstance(context, dict) else []
 
-        if isinstance(goals, list) and any("solve for x" in str(goal).lower() for goal in goals):
+        if "x + 1 = 2" in raw_problem or (
+            isinstance(goals, list) and any("solve for x" in str(goal).lower() for goal in goals)
+        ):
             return json.dumps(
                 {
                     "strategy_tags": ["isolate_variable", "linear_equation"],
                     "open_goals": ["isolate x"],
                     "added_facts": ["equation is linear"],
+                    "added_constraints": [],
+                }
+            )
+
+        if "branch demo" in raw_problem:
+            return json.dumps(
+                {
+                    "strategy_tags": ["case_split", "branch_reasoning"],
+                    "open_goals": ["branch_on_sign"],
+                    "added_facts": ["split variable into two cases"],
+                    "added_constraints": [],
+                }
+            )
+
+        if "contradiction demo" in raw_problem:
+            return json.dumps(
+                {
+                    "strategy_tags": ["inconsistency_hunt"],
+                    "open_goals": ["contradiction_split"],
+                    "added_facts": [],
+                    "added_constraints": [],
+                }
+            )
+
+        if "parametric demo" in raw_problem:
+            return json.dumps(
+                {
+                    "strategy_tags": ["witness_generalization"],
+                    "open_goals": ["produce_parametric_family"],
+                    "added_facts": [],
                     "added_constraints": [],
                 }
             )
@@ -75,6 +145,7 @@ class StubLLMClient(UnifiedLLMClient):
         payload = _parse_prompt(prompt)
         context = payload.get("context", {})
         goals = context.get("open_goals", []) if isinstance(context, dict) else []
+        branches = context.get("branch_assignments", []) if isinstance(context, dict) else []
 
         if isinstance(goals, list) and any("isolate x" in str(goal).lower() for goal in goals):
             return json.dumps(
@@ -102,6 +173,117 @@ class StubLLMClient(UnifiedLLMClient):
                             "branch_labels": [],
                             "metadata": {},
                         },
+                    ]
+                }
+            )
+
+        if isinstance(goals, list) and any("branch_on_sign" in str(goal).lower() for goal in goals):
+            if not branches:
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "branch",
+                                "title": "split_positive_negative",
+                                "rationale": "analyze both sign cases",
+                                "inputs": ["case_var^2 = 1"],
+                                "outputs": ["branch_split"],
+                                "added_facts": [],
+                                "added_constraints": [],
+                                "branch_labels": ["positive_case", "negative_case"],
+                                "metadata": {"normalized_form": "branch_split"},
+                            }
+                        ]
+                    }
+                )
+            if isinstance(branches, list) and branches and str(branches[-1]) == "negative_case":
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "prune",
+                                "title": "reject_negative_case",
+                                "rationale": "violates branch-local assumptions",
+                                "inputs": [],
+                                "outputs": [],
+                                "added_facts": [],
+                                "added_constraints": [],
+                                "branch_labels": [],
+                                "metadata": {"prune_status": "contradiction"},
+                            }
+                        ]
+                    }
+                )
+            return json.dumps(
+                {
+                    "actions": [
+                        {
+                            "action_type": "rewrite",
+                            "title": "finish_positive_case",
+                            "rationale": "positive branch yields valid witness",
+                            "inputs": [],
+                            "outputs": ["case_var=1"],
+                            "added_facts": ["case_var = 1"],
+                            "added_constraints": [],
+                            "branch_labels": [],
+                            "metadata": {"mark_solved": True, "normalized_form": "case_var=1"},
+                        }
+                    ]
+                }
+            )
+
+        if isinstance(goals, list) and any("contradiction_split" in str(goal).lower() for goal in goals):
+            if not branches:
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "branch",
+                                "title": "split_for_contradiction",
+                                "rationale": "enter contradiction checking branch",
+                                "inputs": [],
+                                "outputs": ["contradiction_branch"],
+                                "added_facts": [],
+                                "added_constraints": [],
+                                "branch_labels": ["candidate_branch"],
+                                "metadata": {"normalized_form": "contradiction_branch"},
+                            }
+                        ]
+                    }
+                )
+            return json.dumps(
+                {
+                    "actions": [
+                        {
+                            "action_type": "prune",
+                            "title": "prune_contradiction",
+                            "rationale": "constraints become inconsistent",
+                            "inputs": [],
+                            "outputs": [],
+                            "added_facts": [],
+                            "added_constraints": [],
+                            "branch_labels": [],
+                            "metadata": {"prune_status": "contradiction"},
+                        }
+                    ]
+                }
+            )
+
+        if isinstance(goals, list) and any("produce_parametric_family" in str(goal).lower() for goal in goals):
+            return json.dumps(
+                {
+                    "actions": [
+                        {
+                            "action_type": "hypothesize_witness",
+                            "title": "introduce_parameterized_witness",
+                            "rationale": "construct witness family indexed by parameter",
+                            "inputs": ["x = k"],
+                            "outputs": ["x = k"],
+                            "added_facts": ["witness depends on k"],
+                            "added_constraints": [],
+                            "branch_labels": [],
+                            "metadata": {"mark_parametric": True, "normalized_form": "x=k"},
+                        }
                     ]
                 }
             )

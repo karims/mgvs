@@ -39,12 +39,14 @@ def _apply_common_updates(state: ReasoningState, action: CandidateAction) -> Non
         state.mark_status(StateStatus.NEEDS_REINTERPRETATION)
     if action.metadata.get("mark_solved", False):
         state.mark_status(StateStatus.SOLVED)
+        state.open_goals = []
 
 
 def _append_trace(state: ReasoningState, action: CandidateAction, *, branch_label: str | None) -> None:
     """Store a compact accepted trace summary for the transition."""
 
     updates: dict[str, object] = {
+        "title": action.title,
         "inputs": list(action.inputs),
         "outputs": list(action.outputs),
         "added_facts": list(action.added_facts),

@@ -13,7 +13,7 @@ class TestCLI(unittest.TestCase):
     def test_main_returns_zero(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main()
+            code = main([])
         self.assertEqual(code, 0)
         self.assertIn("mgvs bootstrap ready", buffer.getvalue())
 
