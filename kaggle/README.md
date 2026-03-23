@@ -1,61 +1,77 @@
 # MGVS Kaggle Offline Runner
 
-This folder contains assets for running `mgvs` in a Kaggle notebook without internet access.
+This folder provides a thin, reproducible Kaggle workflow where all solver logic stays in the `mgvs` package.
 
-## 1) Build and Upload Bundle
+## Bundle Build and Upload Flow
 
-From your local repo:
+1. Build the Kaggle bundle locally:
 
 ```bash
 scripts/build_kaggle_bundle.sh
 ```
 
-Upload `dist/mgvs_kaggle_bundle.zip` as a Kaggle Dataset.
+2. Upload `dist/mgvs_kaggle_bundle.zip` as a Kaggle Dataset.
 
-Recommended dataset structure after upload:
+3. Attach that dataset to your Kaggle notebook.
+
+Expected dataset layout after upload:
 - `kaggle_bundle/wheels/*.whl`
+- `kaggle_bundle/config/runtime_config.json`
 - `kaggle_bundle/examples/handpicked_problems.json`
+- `kaggle_bundle/examples/reference_numeric.csv`
 - `kaggle_bundle/kaggle/submission_notebook.ipynb`
+- `kaggle_bundle/kaggle/README.md`
 
-## 2) Notebook Setup (Offline)
+## Notebook Attachment and Install Flow
 
-Inside a Kaggle notebook, attach the uploaded dataset and install from the local wheel path.
+Inside the notebook:
 
-```python
-import glob
-import subprocess
-import sys
+1. Set your dataset slug (`MGVS_DATASET_SLUG`).
+2. Install the wheel from `/kaggle/input/<slug>/kaggle_bundle/wheels/*.whl`.
+3. Load defaults from `/kaggle/input/<slug>/kaggle_bundle/config/runtime_config.json`.
+4. Read competition input CSV, run solver, write deterministic `submission.csv`.
 
-WHEEL_PATH = sorted(glob.glob("/kaggle/input/<your-dataset-slug>/kaggle_bundle/wheels/*.whl"))[0]
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", WHEEL_PATH])
+No internet dependency is required.
+
+## Local Kaggle Dry-Run Validation
+
+Run:
+
+```bash
+scripts/smoke_kaggle_bundle.sh
 ```
 
-No GitHub clone and no internet dependency is required.
+This script validates:
+- bundle was built and contains required files
+- wheel installs from bundle path
+- Kaggle-like path (`/kaggle/input/...`) flow works in a local simulation
+- a deterministic `submission.csv` is produced from synthetic `test.csv`
 
-## 3) Running Solver on Competition Input
+## Offline Assumptions
 
-Expected pattern:
-1. Read competition CSV from `/kaggle/input/<competition>/test.csv`.
-2. For each row, call `mgvs.solve.runner.solve(problem_text, ...)`.
-3. Convert solver result to a prediction string/number.
-4. Write `submission.csv` with competition-required columns.
+- Notebook runtime has no internet access.
+- Code is installed only from attached dataset wheel.
+- Core solve behavior is package-driven (`mgvs.solve.runner.solve`).
+- Notebook is only for I/O and submission assembly.
 
-The starter notebook scaffold in `submission_notebook.ipynb` already includes this flow.
+## Common Failure Points
 
-## 4) Runtime Config via Environment Variables
+- Wrong dataset slug:
+  - Symptom: no wheel found in `/kaggle/input/.../wheels`.
+  - Fix: set `MGVS_DATASET_SLUG` correctly.
 
-For optional vLLM/OpenAI-compatible backend settings:
-- `MGVS_VLLM_BASE_URL`
-- `MGVS_VLLM_API_KEY`
-- `MGVS_VLLM_MODEL_NAME`
-- `MGVS_VLLM_TEMPERATURE`
-- `MGVS_VLLM_MAX_TOKENS`
-- `MGVS_VLLM_TIMEOUT`
+- Missing wheel in uploaded dataset:
+  - Symptom: install step fails.
+  - Fix: rebuild with `scripts/build_kaggle_bundle.sh` and re-upload.
 
-Offline-first default is the deterministic stub backend.
+- Wrong competition columns:
+  - Symptom: empty predictions or key errors.
+  - Fix: set `ID_COL`, `PROBLEM_COL`, and `ANSWER_COL` to match competition schema.
 
-## 5) Offline-First Assumptions
+- Invalid runtime config values:
+  - Symptom: solve config creation fails or strange runtime behavior.
+  - Fix: validate numeric fields in `runtime_config.json`.
 
-- The notebook does not fetch code from the internet.
-- The package is installed from a prebuilt wheel in `/kaggle/input/...`.
-- Core logic remains in the Python package; notebook only handles I/O and submission assembly.
+- Using vLLM in offline notebook without endpoint:
+  - Symptom: generation calls fail/time out.
+  - Fix: keep `backend` as `stub` unless a reachable local endpoint is available.

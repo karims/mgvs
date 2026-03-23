@@ -1,0 +1,13 @@
+{
+  "backend": "stub",
+  "target_type": "competition",
+  "max_depth": 4,
+  "beam_width": 3,
+  "max_candidates": 3,
+  "enable_smoke_test": true,
+  "submission": {
+    "id_col": "id",
+    "problem_col": "problem",
+    "answer_col": "answer"
+  }
+}
