@@ -42,7 +42,13 @@ def _apply_common_updates(state: ReasoningState, action: CandidateAction) -> Non
         state.open_goals = []
 
 
-def _append_trace(state: ReasoningState, action: CandidateAction, *, branch_label: str | None) -> None:
+def _append_trace(
+    state: ReasoningState,
+    action: CandidateAction,
+    *,
+    branch_label: str | None,
+    branch_fanout: int | None = None,
+) -> None:
     """Store a compact accepted trace summary for the transition."""
 
     updates: dict[str, object] = {
@@ -54,6 +60,8 @@ def _append_trace(state: ReasoningState, action: CandidateAction, *, branch_labe
     }
     if branch_label is not None:
         updates["branch_label"] = branch_label
+    if branch_fanout is not None:
+        updates["branch_fanout"] = branch_fanout
 
     state.add_trace_step(
         TraceStep(
@@ -102,7 +110,7 @@ def apply_action(
             previous_status = child.status
             child.branch_assignments.append(label)
             _apply_common_updates(child, action)
-            _append_trace(child, action, branch_label=label)
+            _append_trace(child, action, branch_label=label, branch_fanout=len(labels))
             _apply_score(
                 child,
                 action=action,

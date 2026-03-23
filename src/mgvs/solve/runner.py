@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from mgvs.actions.models import CandidateAction
+from mgvs.domains import active_domain_plugins
+from mgvs.domains.base import DomainPlugin
 from mgvs.llm.base import UnifiedLLMClient
 from mgvs.llm.stub import StubLLMClient, StubPipelineProposer, run_pct_stage, run_pt_stage
-from mgvs.search.controller import ControllerConfig, ControllerResult, StateCanonicalizer, run_search
+from mgvs.llm.vllm_client import VLLMClient
+from mgvs.search.controller import (
+    ControllerConfig,
+    ControllerResult,
+    IterationSummary,
+    StateCanonicalizer,
+    run_search,
+)
 from mgvs.state.models import ReasoningState, create_initial_state
 from mgvs.types import StateStatus
-from mgvs.verify.base import CompositeVerifier
+from mgvs.verify.base import CombinedVerificationResult, CompositeVerifier
 from mgvs.verify.consistency import V0StateConsistencyVerifier
 from mgvs.verify.global_ import V0GlobalCompatibilityVerifier
 from mgvs.verify.local import V0LocalValidityVerifier
@@ -40,6 +50,8 @@ class SolveResult:
     trace_summary: list[str]
     termination_reason: str
     depth_reached: int
+    iteration_summaries: list[IterationSummary] = field(default_factory=list)
+    verifier_rejections_by_level: dict[str, int] = field(default_factory=dict)
 
 
 class DefaultStateCanonicalizer(StateCanonicalizer):
@@ -63,6 +75,54 @@ class DefaultStateCanonicalizer(StateCanonicalizer):
         return state
 
 
+class TrackingCompositeVerifier:
+    """Controller-compatible verifier wrapper that tracks rejection counts."""
+
+    def __init__(self, verifier: CompositeVerifier, domain_plugins: list[DomainPlugin] | None = None) -> None:
+        self._verifier = verifier
+        self._domain_plugins = domain_plugins or []
+        self.rejections_by_level: dict[str, int] = {
+            "local": 0,
+            "consistency": 0,
+            "global": 0,
+            "domain": 0,
+        }
+
+    def is_action_valid(self, state: ReasoningState, action: CandidateAction) -> bool:
+        result = self._verifier.verify_action(state, action)
+        self._record_rejections(result)
+        if not result.passed:
+            return False
+
+        for plugin in self._domain_plugins:
+            domain_result = plugin.validate_action(state, action)
+            if not domain_result.passed:
+                self.rejections_by_level["domain"] = self.rejections_by_level.get("domain", 0) + 1
+                return False
+        return True
+
+    def is_state_valid(self, state: ReasoningState) -> bool:
+        result = self._verifier.verify_state(state)
+        self._record_rejections(result)
+        if not result.passed:
+            return False
+
+        for plugin in self._domain_plugins:
+            domain_result = plugin.validate_state(state)
+            if not domain_result.passed:
+                self.rejections_by_level["domain"] = self.rejections_by_level.get("domain", 0) + 1
+                return False
+        return True
+
+    def _record_rejections(self, result: CombinedVerificationResult) -> None:
+        if result.passed:
+            return
+        for level_result in result.results:
+            if level_result.passed:
+                continue
+            self.rejections_by_level[level_result.level] = self.rejections_by_level.get(level_result.level, 0) + 1
+
+
 def build_default_verifier() -> CompositeVerifier:
     """Construct the default three-level composite verifier."""
 
@@ -71,6 +131,30 @@ def build_default_verifier() -> CompositeVerifier:
         consistency_verifier=V0StateConsistencyVerifier(),
         global_verifier=V0GlobalCompatibilityVerifier(),
     )
+
+
+def select_llm_client(backend: str) -> UnifiedLLMClient:
+    """Select LLM backend by name."""
+
+    normalized = backend.strip().lower()
+    if normalized == "vllm":
+        return VLLMClient.from_env()
+    return StubLLMClient()
+
+
+class DomainAwareProposer:
+    """Wraps a proposer and applies domain plugin action enrichment."""
+
+    def __init__(self, base_proposer: StubPipelineProposer, plugins: list[DomainPlugin]) -> None:
+        self._base_proposer = base_proposer
+        self._plugins = plugins
+
+    def propose(self, state: ReasoningState, depth: int) -> list[CandidateAction]:
+        actions = self._base_proposer.propose(state, depth)
+        active = active_domain_plugins(state, self._plugins)
+        for plugin in active:
+            actions = plugin.enrich_actions(state, actions)
+        return actions
 
 
 def solve(
@@ -87,12 +171,17 @@ def solve(
     state = create_initial_state(raw_problem=raw_problem, target_type=cfg.target_type)
     state = run_pt_stage(state, llm_client)
     state = run_pct_stage(state, llm_client)
+    plugins = active_domain_plugins(state)
+    for plugin in plugins:
+        plugin.annotate_state(state)
 
-    proposer = StubPipelineProposer(llm_client, max_candidates=cfg.max_candidates)
+    base_proposer = StubPipelineProposer(llm_client, max_candidates=cfg.max_candidates)
+    proposer = DomainAwareProposer(base_proposer, plugins)
+    tracking_verifier = TrackingCompositeVerifier(build_default_verifier(), domain_plugins=plugins)
     controller_result = run_search(
         state,
         proposer,
-        verifier=build_default_verifier(),
+        verifier=tracking_verifier,
         canonicalizer=DefaultStateCanonicalizer(),
         config=ControllerConfig(max_depth=cfg.max_depth, beam_width=cfg.beam_width),
     )
@@ -103,6 +192,8 @@ def solve(
         trace_summary=_summarize_trace(best_state),
         termination_reason=controller_result.termination_reason,
         depth_reached=controller_result.depth_reached,
+        iteration_summaries=controller_result.iteration_summaries,
+        verifier_rejections_by_level=dict(tracking_verifier.rejections_by_level),
     )
 
 

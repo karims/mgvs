@@ -1,0 +1,5 @@
+uid,problem_text,expected_answer
+p1,Solve x + 1 = 2,1
+p2,Branch demo: analyze two sign cases,1
+p3,Contradiction demo: inconsistent constraints,0
+p4,Parametric demo: represent family of solutions,42
