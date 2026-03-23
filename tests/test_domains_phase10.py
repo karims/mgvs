@@ -23,7 +23,7 @@ class TestDomainsPhase10(unittest.TestCase):
 
         self.assertIn("domain:algebra", state.strategy_tags)
         self.assertIn("strategy:eliminate", state.strategy_tags)
-        self.assertIn("isolate primary unknown", state.open_goals)
+        self.assertIn("reduce equation system", state.open_goals)
 
     def test_polynomial_plugin_detection_and_goals(self) -> None:
         state = create_initial_state("Find roots of polynomial x^3 - 1", "polynomial")

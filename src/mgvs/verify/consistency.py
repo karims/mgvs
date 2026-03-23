@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from mgvs.actions.models import ActionType, CandidateAction
 from mgvs.state.models import ReasoningState
 from mgvs.types import StateStatus
@@ -56,6 +58,26 @@ class V0StateConsistencyVerifier:
                 details={"error": "branch_cannot_include_prune_status"},
             )
 
+        if action.action_type == ActionType.BIND_WITNESS:
+            witness_key = action.metadata.get("witness_key")
+            if not isinstance(witness_key, str) or not witness_key.strip():
+                return VerificationResult(
+                    passed=True,
+                    level=self.level,
+                    reason="ok",
+                    details={},
+                )
+            if witness_key in state.witness_parameters and action.outputs:
+                existing = str(state.witness_parameters[witness_key])
+                candidate = action.outputs[0].strip()
+                if existing and candidate and existing != candidate:
+                    return VerificationResult(
+                        passed=False,
+                        level=self.level,
+                        reason="invalid_witness_binding",
+                        details={"error": "conflicting_witness_assignment", "witness_key": witness_key},
+                    )
+
         return VerificationResult(
             passed=True,
             level=self.level,
@@ -82,12 +104,58 @@ class V0StateConsistencyVerifier:
                 details={"error": "contradiction_tagged_solved"},
             )
 
+        contradiction_pair = self._find_direct_constraint_contradiction(state)
+        if contradiction_pair is not None:
+            return VerificationResult(
+                passed=False,
+                level=self.level,
+                reason="inconsistent_constraints",
+                details={"error": "direct_sign_contradiction", "constraints": list(contradiction_pair)},
+            )
+
+        if (
+            len(state.branch_assignments) >= 2
+            and state.branch_assignments[-1] == state.branch_assignments[-2]
+            and state.status == StateStatus.ACTIVE
+        ):
+            return VerificationResult(
+                passed=False,
+                level=self.level,
+                reason="inconsistent_state",
+                details={"error": "repeated_branch_assignment", "branch": state.branch_assignments[-1]},
+            )
+
         return VerificationResult(
             passed=True,
             level=self.level,
             reason="ok",
             details={},
         )
+
+    @staticmethod
+    def _find_direct_constraint_contradiction(state: ReasoningState) -> tuple[str, str] | None:
+        """Detect simple x>k / x<k sign contradictions in constraints."""
+
+        constraints = [*state.domain_constraints, *state.global_constraints]
+        gt_map: dict[str, float] = {}
+        lt_map: dict[str, float] = {}
+
+        for constraint in constraints:
+            text = constraint.replace(" ", "")
+            gt_match = re.fullmatch(r"([a-zA-Z_][a-zA-Z0-9_]*)>(-?\d+(?:\.\d+)?)", text)
+            lt_match = re.fullmatch(r"([a-zA-Z_][a-zA-Z0-9_]*)<(-?\d+(?:\.\d+)?)", text)
+            if gt_match:
+                gt_map[gt_match.group(1)] = float(gt_match.group(2))
+            if lt_match:
+                lt_map[lt_match.group(1)] = float(lt_match.group(2))
+
+        for var, gt in gt_map.items():
+            if var not in lt_map:
+                continue
+            lt = lt_map[var]
+            if gt >= lt:
+                return (f"{var}>{gt}", f"{var}<{lt}")
+        return None
 
 
 def verify_consistency(state: ReasoningState, action: CandidateAction) -> VerificationResult:
