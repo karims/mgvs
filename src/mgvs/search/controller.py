@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+import time
+from typing import Callable, Protocol
 
 from mgvs.actions.apply import apply_action
 from mgvs.actions.models import CandidateAction
 from mgvs.search.beam import deduplicate_states, select_beam
 from mgvs.search.termination import is_terminal_state, should_terminate
 from mgvs.state.models import ReasoningState
+from mgvs.types import StateStatus
 
 
 class ActionProposer(Protocol):
@@ -53,6 +55,9 @@ class ControllerConfig:
 
     max_depth: int = 8
     beam_width: int = 4
+    max_wall_time_s: float = 20.0
+    candidate_cap_per_state: int = 3
+    time_fn: Callable[[], float] = time.monotonic
 
 
 @dataclass(frozen=True)
@@ -107,8 +112,18 @@ def run_search(
     beam = [state_canonicalizer.canonicalize(initial_state.clone())]
     summaries: list[IterationSummary] = []
     depth = 0
+    start_time = cfg.time_fn()
 
     while True:
+        if cfg.max_wall_time_s > 0 and (cfg.time_fn() - start_time) >= cfg.max_wall_time_s:
+            _mark_budget_exhausted(beam)
+            return ControllerResult(
+                final_beam=beam,
+                depth_reached=depth,
+                termination_reason="budget_exhausted",
+                iteration_summaries=summaries,
+            )
+
         precheck = should_terminate(
             depth=depth,
             max_depth=cfg.max_depth,
@@ -126,15 +141,24 @@ def run_search(
         candidates_count = 0
         accepted_count = 0
         next_states: list[ReasoningState] = []
+        budget_exhausted = False
 
         for state in beam:
+            if cfg.max_wall_time_s > 0 and (cfg.time_fn() - start_time) >= cfg.max_wall_time_s:
+                budget_exhausted = True
+                break
             if is_terminal_state(state):
                 continue
 
             candidates = proposer.propose(state, depth)
+            if cfg.candidate_cap_per_state > 0:
+                candidates = candidates[: cfg.candidate_cap_per_state]
             candidates_count += len(candidates)
 
             for action in candidates:
+                if cfg.max_wall_time_s > 0 and (cfg.time_fn() - start_time) >= cfg.max_wall_time_s:
+                    budget_exhausted = True
+                    break
                 if not state_verifier.is_action_valid(state, action):
                     continue
                 accepted_count += 1
@@ -143,6 +167,8 @@ def run_search(
                     canonical = state_canonicalizer.canonicalize(child)
                     if state_verifier.is_state_valid(canonical):
                         next_states.append(canonical)
+            if budget_exhausted:
+                break
 
         deduped = deduplicate_states(next_states)
         kept = select_beam(deduped, cfg.beam_width)
@@ -156,6 +182,15 @@ def run_search(
                 kept_after_beam=len(kept),
             )
         )
+
+        if budget_exhausted:
+            _mark_budget_exhausted(kept if kept else beam)
+            return ControllerResult(
+                final_beam=kept if kept else beam,
+                depth_reached=depth + 1,
+                termination_reason="budget_exhausted",
+                iteration_summaries=summaries,
+            )
 
         decision = should_terminate(
             depth=depth + 1,
@@ -173,3 +208,13 @@ def run_search(
 
         beam = kept
         depth += 1
+
+
+def _mark_budget_exhausted(states: list[ReasoningState]) -> None:
+    """Mark active states as dead-end when runtime budget is exhausted."""
+
+    for state in states:
+        if state.status == StateStatus.ACTIVE:
+            state.status = StateStatus.DEAD_END
+            if "budget_exhausted" not in state.strategy_tags:
+                state.strategy_tags.append("budget_exhausted")

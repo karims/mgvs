@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+from dataclasses import replace
 from typing import Any, Callable
 from urllib import error, request
 
@@ -33,6 +34,14 @@ class VLLMClient(UnifiedLLMClient):
 
         return cls(runtime=VLLMRuntimeConfig.from_env())
 
+    def with_overrides(self, *, retries: int | None = None) -> "VLLMClient":
+        """Create a copy with runtime overrides while reusing transport."""
+
+        runtime = self._runtime
+        if retries is not None:
+            runtime = replace(runtime, retries=max(0, int(retries)))
+        return VLLMClient(runtime=runtime, transport=self._transport)
+
     def generate_pt(self, prompt: str) -> str:
         """Generate structured PT output."""
 
@@ -50,6 +59,25 @@ class VLLMClient(UnifiedLLMClient):
 
     def _generate(self, *, stage: str, prompt: str) -> str:
         """Issue one structured stage request with robust fallbacks."""
+
+        attempts = max(1, 1 + int(self._runtime.retries))
+        active_prompt = prompt
+        last_reason = "unknown"
+
+        for attempt in range(attempts):
+            result = self._generate_once(stage=stage, prompt=active_prompt)
+            if result is not None:
+                return result
+
+            # Retry path for malformed/empty/timeout responses.
+            if stage == STAGE_LSS and attempt < attempts - 1:
+                active_prompt = self._reduce_lss_candidates(active_prompt)
+            last_reason = self._last_failure_reason
+
+        return self._fallback_for_stage(stage, reason=last_reason)
+
+    def _generate_once(self, *, stage: str, prompt: str) -> str | None:
+        """Single attempt for structured stage request."""
 
         options = LLMRequestOptions(
             temperature=self._runtime.temperature,
@@ -75,17 +103,22 @@ class VLLMClient(UnifiedLLMClient):
         try:
             response = self._transport(endpoint, payload, headers, options.timeout)
         except (TimeoutError, socket.timeout, error.URLError, OSError):
-            return self._fallback_for_stage(stage, reason="timeout_or_network")
+            self._last_failure_reason = "timeout_or_network"
+            return None
 
         content = self._extract_content(response)
         if not content.strip():
-            return self._fallback_for_stage(stage, reason="empty_response")
+            self._last_failure_reason = "empty_response"
+            return None
 
         parsed = parse_structured_json_object(content)
         if parsed:
             return json.dumps(parsed, sort_keys=True)
 
-        return self._fallback_for_stage(stage, reason="malformed_json")
+        self._last_failure_reason = "malformed_json"
+        return None
+
+    _last_failure_reason = "unknown"
 
     @staticmethod
     def _default_transport(
@@ -125,6 +158,27 @@ class VLLMClient(UnifiedLLMClient):
 
         content = message.get("content", "")
         return str(content)
+
+    def _reduce_lss_candidates(self, prompt: str) -> str:
+        """Reduce max candidate count in LSS prompt for retry stabilization."""
+
+        payload = parse_structured_json_object(prompt)
+        if not payload:
+            return prompt
+
+        constraints = payload.get("constraints")
+        if not isinstance(constraints, dict):
+            return prompt
+        raw_max = constraints.get("max_candidates")
+        if not isinstance(raw_max, int) or raw_max <= 1:
+            return prompt
+
+        reduced = max(1, int(raw_max * float(self._runtime.lss_retry_candidate_decay)))
+        if reduced == raw_max:
+            reduced = raw_max - 1
+        constraints["max_candidates"] = max(1, reduced)
+        payload["constraints"] = constraints
+        return json.dumps(payload, sort_keys=True)
 
     @staticmethod
     def _fallback_for_stage(stage: str, *, reason: str) -> str:

@@ -147,7 +147,9 @@ class StubLLMClient(UnifiedLLMClient):
         goals = context.get("open_goals", []) if isinstance(context, dict) else []
         branches = context.get("branch_assignments", []) if isinstance(context, dict) else []
 
-        if isinstance(goals, list) and any("isolate x" in str(goal).lower() for goal in goals):
+        if isinstance(goals, list) and any(
+            key in str(goal).lower() for goal in goals for key in ("isolate x", "solve for x")
+        ):
             return json.dumps(
                 {
                     "actions": [
