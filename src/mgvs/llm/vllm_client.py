@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from dataclasses import replace
 from typing import Any, Callable
@@ -14,6 +15,19 @@ from mgvs.llm.parser import parse_structured_json_object
 from mgvs.llm.prompts import STAGE_LSS, STAGE_PCT, STAGE_PT, build_stage_system_prompt
 
 Transport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
+
+
+def _debug_enabled() -> bool:
+    """Return whether verbose LLM debug logging is enabled."""
+
+    return os.environ.get("MGVS_DEBUG_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_print(message: str) -> None:
+    """Print debug message when LLM debug logging is enabled."""
+
+    if _debug_enabled():
+        print(message)
 
 
 class VLLMClient(UnifiedLLMClient):
@@ -104,18 +118,30 @@ class VLLMClient(UnifiedLLMClient):
             response = self._transport(endpoint, payload, headers, options.timeout)
         except (TimeoutError, socket.timeout, error.URLError, OSError):
             self._last_failure_reason = "timeout_or_network"
+            _debug_print(f"[{stage}] failure_reason=timeout_or_network")
             return None
 
         content = self._extract_content(response)
+        if _debug_enabled():
+            _debug_print(f"\n===== RAW {stage.upper()} CONTENT START =====")
+            _debug_print(content)
+            _debug_print(f"===== RAW {stage.upper()} CONTENT END =====\n")
+
         if not content.strip():
             self._last_failure_reason = "empty_response"
+            _debug_print(f"[{stage}] failure_reason=empty_response")
             return None
 
         parsed = parse_structured_json_object(content)
+        _debug_print(
+            f"[{stage}] parsed_json_keys: "
+            f"{list(parsed.keys()) if isinstance(parsed, dict) else parsed}"
+        )
         if parsed:
             return json.dumps(parsed, sort_keys=True)
 
         self._last_failure_reason = "malformed_json"
+        _debug_print(f"[{stage}] failure_reason=malformed_json")
         return None
 
     _last_failure_reason = "unknown"
