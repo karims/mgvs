@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field, replace
 
@@ -181,6 +182,7 @@ def select_llm_client(backend: str) -> UnifiedLLMClient:
     """Select LLM backend by name."""
 
     normalized = backend.strip().lower()
+    _debug_runtime_print(f"[runner] select_llm_client backend={normalized}")
     if normalized == "vllm":
         return VLLMClient.from_env()
     return StubLLMClient()
@@ -188,6 +190,25 @@ def select_llm_client(backend: str) -> UnifiedLLMClient:
 
 _STAGE_CACHE = StageCache()
 _SESSION_STARTED_AT: float | None = None
+
+
+def _debug_runtime_enabled() -> bool:
+    """Return whether runner-level debug tracing is enabled."""
+
+    return os.environ.get("MGVS_DEBUG_RUNTIME") == "1" or os.environ.get("MGVS_DEBUG_LLM") == "1"
+
+
+def _debug_runtime_print(message: str) -> None:
+    """Print runner-level debug trace when enabled."""
+
+    if _debug_runtime_enabled():
+        print(message)
+
+
+def _stage_cache_disabled() -> bool:
+    """Return whether stage cache should be bypassed for debugging."""
+
+    return os.environ.get("MGVS_DISABLE_STAGE_CACHE") == "1"
 
 
 @dataclass
@@ -222,10 +243,22 @@ class DomainAwareProposer:
         _ = depth
         prompt = build_lss_prompt(state, max_candidates=self._max_candidates)
         state_key = f"{self._cache_prefix}:{_state_hash(state)}"
-        cached = _STAGE_CACHE.get("lss", state_key)
+        cached = None if _stage_cache_disabled() else _STAGE_CACHE.get("lss", state_key)
+        if cached is not None:
+            _debug_runtime_print(
+                f"[runner][lss] cache_hit key={state_key[:16]}... len={len(cached)}"
+            )
+        else:
+            _debug_runtime_print(
+                f"[runner][lss] cache_miss key={state_key[:16]}... calling {self._client.__class__.__name__}"
+            )
+            if _stage_cache_disabled():
+                _debug_runtime_print("[runner][lss] cache_bypass enabled")
         raw = cached if cached is not None else self._client.generate_lss(prompt)
-        if cached is None:
+        if cached is None and not _stage_cache_disabled():
             _STAGE_CACHE.set("lss", state_key, raw)
+            _debug_runtime_print(f"[runner][lss] cache_store key={state_key[:16]}... len={len(raw)}")
+        _debug_runtime_print(f"[runner][lss] raw_preview={raw[:240]!r}")
         _record_llm_fallback_metadata(raw, self._attempt_context)
 
         actions = parse_lss_output(raw)[: self._max_candidates]
@@ -247,6 +280,10 @@ def solve(
 
     cfg = config or SolveConfig()
     llm_client = client or StubLLMClient()
+    _debug_runtime_print(
+        f"[runner] solve start target_type={cfg.target_type} requested_mode={cfg.requested_mode} "
+        f"client={llm_client.__class__.__name__}"
+    )
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
         return _budget_exhausted_solve_result(raw_problem=raw_problem, target_type=cfg.target_type)
@@ -338,6 +375,10 @@ def _run_attempt(
     mode_settings = mode_settings_for(mode_selection.mode, cfg.policy_config)
     active_client = _client_for_mode(llm_client, mode_settings)
     cache_prefix = f"{active_client.__class__.__name__}:{mode_selection.mode.value}"
+    _debug_runtime_print(
+        f"[runner] attempt mode={mode_selection.mode.value} reason={mode_selection.reason} "
+        f"active_client={active_client.__class__.__name__} cache_prefix={cache_prefix}"
+    )
     attempt_context = RunAttemptContext()
     policy_trace = [f"mode={mode_selection.mode.value}", f"mode_reason={mode_selection.reason}"]
 
@@ -488,12 +529,22 @@ def _run_pt_with_cache(
     """Run PT stage with cache keyed by raw problem hash."""
 
     key = f"{cache_prefix}:{_problem_hash(state.raw_problem)}:{state.target_type}"
-    cached = _STAGE_CACHE.get("pt", key)
+    cached = None if _stage_cache_disabled() else _STAGE_CACHE.get("pt", key)
+    if cached is not None:
+        _debug_runtime_print(f"[runner][pt] cache_hit key={key[:16]}... len={len(cached)}")
+    else:
+        _debug_runtime_print(
+            f"[runner][pt] cache_miss key={key[:16]}... calling {client.__class__.__name__}"
+        )
+        if _stage_cache_disabled():
+            _debug_runtime_print("[runner][pt] cache_bypass enabled")
     raw = cached if cached is not None else client.generate_pt(
         build_pt_prompt(raw_problem=state.raw_problem, target_type=state.target_type)
     )
-    if cached is None:
+    if cached is None and not _stage_cache_disabled():
         _STAGE_CACHE.set("pt", key, raw)
+        _debug_runtime_print(f"[runner][pt] cache_store key={key[:16]}... len={len(raw)}")
+    _debug_runtime_print(f"[runner][pt] raw_preview={raw[:240]!r}")
     _record_llm_fallback_metadata(raw, attempt_context)
     return apply_pt_update(state, parse_pt_output(raw))
 
@@ -508,10 +559,20 @@ def _run_pct_with_cache(
     """Run PCT stage with cache keyed by normalized state hash."""
 
     key = f"{cache_prefix}:{_state_hash(state)}"
-    cached = _STAGE_CACHE.get("pct", key)
+    cached = None if _stage_cache_disabled() else _STAGE_CACHE.get("pct", key)
+    if cached is not None:
+        _debug_runtime_print(f"[runner][pct] cache_hit key={key[:16]}... len={len(cached)}")
+    else:
+        _debug_runtime_print(
+            f"[runner][pct] cache_miss key={key[:16]}... calling {client.__class__.__name__}"
+        )
+        if _stage_cache_disabled():
+            _debug_runtime_print("[runner][pct] cache_bypass enabled")
     raw = cached if cached is not None else client.generate_pct(build_pct_prompt(state))
-    if cached is None:
+    if cached is None and not _stage_cache_disabled():
         _STAGE_CACHE.set("pct", key, raw)
+        _debug_runtime_print(f"[runner][pct] cache_store key={key[:16]}... len={len(raw)}")
+    _debug_runtime_print(f"[runner][pct] raw_preview={raw[:240]!r}")
     _record_llm_fallback_metadata(raw, attempt_context)
     return apply_pct_update(state, parse_pct_output(raw))
 
@@ -591,6 +652,7 @@ def _record_llm_fallback_metadata(raw_text: str, attempt_context: RunAttemptCont
     reason = metadata.get("fallback_reason")
     if not isinstance(reason, str) or not reason:
         return
+    _debug_runtime_print(f"[runner] recorded_llm_fallback reason={reason}")
     attempt_context.malformed_output_count += 1
     attempt_context.llm_fallback_reasons.append(reason)
 

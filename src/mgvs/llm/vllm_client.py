@@ -30,6 +30,15 @@ def _debug_print(message: str) -> None:
         print(message)
 
 
+def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Return headers safe for debug printing."""
+
+    redacted = dict(headers)
+    if "Authorization" in redacted:
+        redacted["Authorization"] = "Bearer <redacted>"
+    return redacted
+
+
 class VLLMClient(UnifiedLLMClient):
     """vLLM-backed unified PT/PCT/LSS client using chat-completions API."""
 
@@ -114,28 +123,54 @@ class VLLMClient(UnifiedLLMClient):
 
         endpoint = f"{self._runtime.base_url.rstrip('/')}/chat/completions"
 
+        if os.environ.get("MGVS_DEBUG_LLM") == "1":
+            print(f"\n===== GENERATE_ONCE {stage.upper()} START =====")
+            print(f"[{stage}] endpoint={endpoint}")
+            print(f"[{stage}] model={self._runtime.model_name}")
+            print(
+                f"[{stage}] options="
+                f"temperature={options.temperature} max_tokens={options.max_tokens} timeout={options.timeout}"
+            )
+            print(f"[{stage}] headers={_redacted_headers(headers)}")
+            print(f"[{stage}] payload_keys={list(payload.keys())}")
+            print(f"[{stage}] system_prompt_start")
+            print(payload["messages"][0]["content"])
+            print(f"[{stage}] system_prompt_end")
+            print(f"[{stage}] user_prompt_start")
+            print(prompt)
+            print(f"[{stage}] user_prompt_end")
+
         try:
             response = self._transport(endpoint, payload, headers, options.timeout)
         except (TimeoutError, socket.timeout, error.URLError, OSError):
             self._last_failure_reason = "timeout_or_network"
-            _debug_print(f"[{stage}] failure_reason=timeout_or_network")
+            if os.environ.get("MGVS_DEBUG_LLM") == "1":
+                print(f"[{stage}] failure_reason=timeout_or_network")
+                print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return None
 
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print("\n===== FULL RESPONSE OBJECT START =====")
             print(response)
             print("===== FULL RESPONSE OBJECT END =====\n")
+            print(
+                f"[{stage}] response_top_level_keys="
+                f"{list(response.keys()) if isinstance(response, dict) else response}"
+            )
 
         content = self._extract_content(response)
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"\n===== RAW {stage.upper()} CONTENT START =====")
             print(content)
             print(f"===== RAW {stage.upper()} CONTENT END =====\n")
+            print(f"[{stage}] raw_content_length={len(content)}")
+            print(f"[{stage}] raw_content_repr={content!r}")
 
         if not content.strip():
             self._last_failure_reason = "empty_response"
             if os.environ.get("MGVS_DEBUG_LLM") == "1":
                 print(f"[{stage}] failure_reason=empty_response")
+                print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return None
 
         parsed = parse_structured_json_object(content)
@@ -145,11 +180,15 @@ class VLLMClient(UnifiedLLMClient):
                 list(parsed.keys()) if isinstance(parsed, dict) else parsed,
             )
         if parsed:
+            if os.environ.get("MGVS_DEBUG_LLM") == "1":
+                print(f"[{stage}] parse_status=success")
+                print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return json.dumps(parsed, sort_keys=True)
 
         self._last_failure_reason = "malformed_json"
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"[{stage}] failure_reason=malformed_json")
+            print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
         return None
 
     _last_failure_reason = "unknown"
