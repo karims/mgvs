@@ -14,7 +14,7 @@ from mgvs.state.models import ReasoningState
 def _parser_debug_enabled() -> bool:
     """Return whether parser debug logging is enabled."""
 
-    return os.environ.get("MGVS_DEBUG_PARSER", "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("MGVS_DEBUG_PARSER") == "1"
 
 
 def _parser_debug_print(message: str) -> None:
@@ -214,25 +214,28 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
     """Parse LSS JSON output into bounded candidate actions."""
 
     obj = _load_json_object(text)
-    if _parser_debug_enabled():
-        _parser_debug_print("\n===== PARSE_LSS_OUTPUT INPUT START =====")
-        _parser_debug_print(text)
-        _parser_debug_print("===== PARSE_LSS_OUTPUT INPUT END =====")
-        _parser_debug_print(
-            f"parse_lss_output obj keys: {list(obj.keys()) if isinstance(obj, dict) else obj}"
+    if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+        print("\n===== PARSE_LSS_OUTPUT INPUT START =====")
+        print(text)
+        print("===== PARSE_LSS_OUTPUT INPUT END =====")
+        print(
+            "parse_lss_output obj keys:",
+            list(obj.keys()) if isinstance(obj, dict) else obj,
         )
 
     raw_actions = obj.get("actions")
     if raw_actions is None and {"action_type", "title"}.issubset(set(obj.keys())):
         raw_actions = [obj]
     if not isinstance(raw_actions, list):
-        _parser_debug_print(f"parse_lss_output: raw_actions is not a list -> {raw_actions}")
+        if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+            print("parse_lss_output: raw_actions is not a list ->", raw_actions)
         return []
 
     parsed: list[CandidateAction] = []
     for item in raw_actions:
         if not isinstance(item, dict):
-            _parser_debug_print(f"parse_lss_output: skipping non-dict item -> {item}")
+            if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+                print("parse_lss_output: skipping non-dict item ->", item)
             continue
 
         action_type_raw = str(
@@ -241,15 +244,15 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         try:
             action_type = ActionType(action_type_raw)
         except ValueError:
-            _parser_debug_print(
-                f"parse_lss_output: invalid action_type -> {action_type_raw} item: {item}"
-            )
+            if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+                print("parse_lss_output: invalid action_type ->", action_type_raw, "item:", item)
             continue
 
         title = str(_first_present(item, ["title", "name"]) or "").strip()
         rationale = str(_first_present(item, ["rationale", "why"]) or "").strip()
         if not title:
-            _parser_debug_print(f"parse_lss_output: missing title -> {item}")
+            if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+                print("parse_lss_output: missing title ->", item)
             continue
         if not rationale:
             rationale = "unspecified rationale"
@@ -270,9 +273,10 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
             )
         )
 
-    _parser_debug_print(f"parse_lss_output: parsed action count = {len(parsed)}")
-    for index, action in enumerate(parsed):
-        _parser_debug_print(f"  action[{index}] = {action}")
+    if os.environ.get("MGVS_DEBUG_PARSER") == "1":
+        print("parse_lss_output: parsed action count =", len(parsed))
+        for index, action in enumerate(parsed):
+            print(f"  action[{index}] =", action)
     return parsed
 
 
