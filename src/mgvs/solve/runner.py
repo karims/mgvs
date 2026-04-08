@@ -14,6 +14,7 @@ from mgvs.domains import active_domain_plugins
 from mgvs.domains.base import DomainPlugin
 from mgvs.llm.base import UnifiedLLMClient
 from mgvs.llm.parser import (
+    PCTUpdate,
     apply_pct_update,
     apply_pt_update,
     parse_lss_output,
@@ -390,9 +391,26 @@ def _run_attempt(
         policy_trace.append("stage:pt=skipped")
 
     if mode_settings.use_pct:
-        state = _run_pct_with_cache(state, active_client, cache_prefix=cache_prefix, attempt_context=attempt_context)
+        state, pct_update = _run_pct_with_cache(
+            state,
+            active_client,
+            cache_prefix=cache_prefix,
+            attempt_context=attempt_context,
+        )
         policy_trace.append("stage:pct=used")
+        pct_handoff = _maybe_accept_pct_answer_candidate(
+            state=state,
+            pct_update=pct_update,
+            solve_mode=mode_selection.mode.value,
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+            policy_trace=policy_trace,
+            attempt_context=attempt_context,
+        )
+        if pct_handoff is not None:
+            return pct_handoff
     else:
+        pct_update = PCTUpdate()
         policy_trace.append("stage:pct=skipped")
 
     plugins = active_domain_plugins(state)
@@ -555,7 +573,7 @@ def _run_pct_with_cache(
     *,
     cache_prefix: str,
     attempt_context: RunAttemptContext,
-) -> ReasoningState:
+) -> tuple[ReasoningState, PCTUpdate]:
     """Run PCT stage with cache keyed by normalized state hash."""
 
     key = f"{cache_prefix}:{_state_hash(state)}"
@@ -574,7 +592,53 @@ def _run_pct_with_cache(
         _debug_runtime_print(f"[runner][pct] cache_store key={key[:16]}... len={len(raw)}")
     _debug_runtime_print(f"[runner][pct] raw_preview={raw[:240]!r}")
     _record_llm_fallback_metadata(raw, attempt_context)
-    return apply_pct_update(state, parse_pct_output(raw))
+    update = parse_pct_output(raw)
+    return apply_pct_update(state, update), update
+
+
+def _maybe_accept_pct_answer_candidate(
+    *,
+    state: ReasoningState,
+    pct_update: PCTUpdate,
+    solve_mode: str,
+    fallback_used: bool,
+    fallback_reason: str,
+    policy_trace: list[str],
+    attempt_context: RunAttemptContext,
+) -> SolveResult | None:
+    """Attempt early answer selection from a PCT answer candidate before LSS."""
+
+    if pct_update.answer_candidate is None:
+        return None
+
+    policy_trace.append("pct_answer_candidate_detected")
+    candidate_state = state.clone()
+    candidate_state.status = StateStatus.SOLVED
+    decision = select_answer_across_states([candidate_state])
+
+    if decision.predicted_answer != pct_update.answer_candidate:
+        policy_trace.append("pct_answer_candidate_rejected")
+        return None
+
+    policy_trace.append("pct_answer_candidate_accepted")
+    if attempt_context.llm_fallback_reasons:
+        policy_trace.append(f"llm_fallback_reasons={','.join(attempt_context.llm_fallback_reasons)}")
+    trace_summary = [f"pct_answer_candidate_accepted: answer={pct_update.answer_candidate}"]
+    return SolveResult(
+        best_state=candidate_state,
+        trace_summary=trace_summary,
+        termination_reason="pct_answer_candidate_accepted",
+        depth_reached=0,
+        predicted_answer=decision.predicted_answer,
+        answer_status=decision.answer_status,
+        supporting_state_ids=list(decision.supporting_state_ids),
+        supporting_trace_count=decision.supporting_trace_count,
+        solve_mode=solve_mode,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        policy_trace=policy_trace + [f"malformed_outputs={attempt_context.malformed_output_count}"],
+        verifier_rejections_by_level={"local": 0, "consistency": 0, "global": 0, "domain": 0},
+    )
 
 
 def _problem_hash(raw_problem: str) -> str:

@@ -1,10 +1,12 @@
 """Phase 6 tests for end-to-end local solve runner and CLI wiring."""
 
 import io
+import json
 import unittest
 from contextlib import redirect_stdout
 
 from mgvs.cli.main import main
+from mgvs.llm.base import UnifiedLLMClient
 from mgvs.solve.runner import SolveConfig, solve
 from mgvs.types import StateStatus
 
@@ -36,6 +38,76 @@ class TestSolvePhase6(unittest.TestCase):
 
         self.assertEqual(result.best_state.status, StateStatus.PARAMETRIC)
         self.assertTrue(any("introduce_parameterized_witness" in line for line in result.trace_summary))
+
+    def test_pct_answer_candidate_can_short_circuit_before_lss(self) -> None:
+        class PCTAnswerClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"open_goals": ["solve"]})
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["direct_answer"],
+                        "open_goals": [],
+                        "candidate_equations": [],
+                        "answer_candidate": 50,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                raise AssertionError("LSS should not run when PCT answer candidate is accepted")
+
+        result = solve("Direct answer demo", config=SolveConfig(), client=PCTAnswerClient())
+
+        self.assertEqual(result.best_state.status, StateStatus.SOLVED)
+        self.assertEqual(result.predicted_answer, 50)
+        self.assertIn("pct_answer_candidate_detected", result.policy_trace)
+        self.assertIn("pct_answer_candidate_accepted", result.policy_trace)
+        self.assertTrue(any("pct_answer_candidate_accepted" in line for line in result.trace_summary))
+
+    def test_pct_answer_candidate_rejection_falls_through_to_lss(self) -> None:
+        lss_calls: list[str] = []
+
+        class RejectedPCTAnswerClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"current_equations": ["x = 7"], "open_goals": ["solve"]})
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["direct_answer"],
+                        "open_goals": ["confirm x"],
+                        "candidate_equations": [],
+                        "answer_candidate": 50,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                lss_calls.append(prompt)
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "rewrite",
+                                "title": "confirm_x",
+                                "added_facts": ["x = 7"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+        result = solve("Rejected answer candidate demo", config=SolveConfig(), client=RejectedPCTAnswerClient())
+
+        self.assertIn("pct_answer_candidate_detected", result.policy_trace)
+        self.assertIn("pct_answer_candidate_rejected", result.policy_trace)
+        self.assertEqual(len(lss_calls), 1)
+        self.assertNotEqual(result.termination_reason, "pct_answer_candidate_accepted")
 
     def test_cli_solve_command_outputs_summary(self) -> None:
         buffer = io.StringIO()
