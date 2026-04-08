@@ -253,7 +253,7 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         return []
 
     parsed: list[CandidateAction] = []
-    for item in raw_actions:
+    for item in raw_actions[:2]:
         if not isinstance(item, dict):
             if os.environ.get("MGVS_DEBUG_PARSER") == "1":
                 print("parse_lss_output: skipping non-dict item ->", item)
@@ -275,14 +275,12 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
             if os.environ.get("MGVS_DEBUG_PARSER") == "1":
                 print("parse_lss_output: missing title ->", item)
             continue
-        if not rationale:
-            rationale = "unspecified rationale"
 
         parsed.append(
             CandidateAction(
                 action_type=action_type,
                 title=title,
-                rationale=rationale,
+                rationale=rationale or "unspecified rationale",
                 inputs=_string_list(_first_present(item, ["inputs"])),
                 outputs=_string_list(_first_present(item, ["outputs"])),
                 added_facts=_string_list(_first_present(item, ["added_facts", "facts"])),

@@ -104,32 +104,55 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "task": "local_step_synthesis",
         "context": context,
         "constraints": {
-            "max_candidates": max_candidates,
+            "max_candidates": min(2, max_candidates),
+            "preferred_candidates": 1,
             "bounded_actions_only": True,
         },
         "output_schema": {
             "actions": [
                 {
-                    "action_type": "rewrite|substitute|eliminate|factor|expand|introduce_representation|hypothesize_witness|bind_witness|derive_constraint|detect_symmetry|branch|prune",
+                    "action_type": "derive_constraint|rewrite|substitute|eliminate",
                     "title": "short title",
-                    "rationale": "short why <= 20 words",
-                    "inputs": ["item"],
-                    "outputs": ["item"],
                     "added_facts": ["fact"],
                     "added_constraints": ["constraint"],
-                    "branch_labels": ["label"],
-                    "metadata": {
-                        "mark_solved": False,
-                        "mark_parametric": False,
-                        "prune_status": "dead_end|contradiction",
-                    },
                 }
             ]
         },
+        "example_outputs": [
+            {
+                "actions": [
+                    {
+                        "action_type": "rewrite",
+                        "title": "subtract_1",
+                        "added_facts": ["x = 1"],
+                        "added_constraints": [],
+                    }
+                ]
+            },
+            {
+                "actions": [
+                    {
+                        "action_type": "derive_constraint",
+                        "title": "record_domain",
+                        "added_facts": [],
+                        "added_constraints": ["x in R"],
+                    },
+                    {
+                        "action_type": "substitute",
+                        "title": "replace_y",
+                        "added_facts": ["x + 2 = 10"],
+                        "added_constraints": [],
+                    }
+                ]
+            },
+        ],
         "instructions": [
             "Return JSON only.",
-            "Bounded candidate actions only; no prose outside action fields.",
-            "Only include fields from output_schema.",
+            "Do not include prose.",
+            "Do not include markdown fences.",
+            "Emit at most 2 actions.",
+            "Prefer 1 action when possible.",
+            "Use only the fields shown in output_schema.",
         ],
     }
     return _json_block(contract)
@@ -147,5 +170,5 @@ def build_stage_system_prompt(stage: str) -> str:
     if stage == STAGE_PCT:
         return f"{base} Return only a tiny JSON object with strategy tags, open goals, candidate equations, and optional integer answer candidate."
     if stage == STAGE_LSS:
-        return f"{base} Propose bounded candidate actions only."
+        return f"{base} Return one or two tiny candidate actions only, using only action_type, title, added_facts, and added_constraints."
     return base

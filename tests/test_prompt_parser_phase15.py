@@ -57,11 +57,10 @@ class TestPromptParserPhase15(unittest.TestCase):
         payload = {
             "actions": [
                 {
-                    "type": "derive_constraint",
-                    "name": "add bound",
-                    "why": "keep domain consistent",
-                    "facts": ["x in R"],
-                    "constraints": ["x>=0"],
+                    "action_type": "derive_constraint",
+                    "title": "add_bound",
+                    "added_facts": ["x in R"],
+                    "added_constraints": ["x>=0"],
                 }
             ]
         }
@@ -69,8 +68,9 @@ class TestPromptParserPhase15(unittest.TestCase):
 
         self.assertEqual(len(parsed), 1)
         self.assertEqual(parsed[0].action_type, ActionType.DERIVE_CONSTRAINT)
-        self.assertEqual(parsed[0].title, "add bound")
+        self.assertEqual(parsed[0].title, "add_bound")
         self.assertEqual(parsed[0].added_constraints, ["x>=0"])
+        self.assertEqual(parsed[0].rationale, "unspecified rationale")
 
     def test_malformed_response_handling(self) -> None:
         payload = {
@@ -83,12 +83,26 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed, [])
 
     def test_partial_parse_fallback(self) -> None:
-        wrapped = "prefix text {\"actions\":[{\"action_type\":\"rewrite\",\"title\":\"t\",\"rationale\":\"r\"},{\"action_type\":\"substitute\",\"title\":\"s\"}]} suffix"
+        wrapped = "prefix text {\"actions\":[{\"action_type\":\"rewrite\",\"title\":\"t\"},{\"action_type\":\"substitute\",\"title\":\"s\"}]} suffix"
         parsed = parse_lss_output(wrapped)
 
         self.assertEqual(len(parsed), 2)
         self.assertEqual(parsed[0].action_type, ActionType.REWRITE)
         self.assertEqual(parsed[1].rationale, "unspecified rationale")
+
+    def test_lss_parser_caps_to_two_actions(self) -> None:
+        payload = {
+            "actions": [
+                {"action_type": "rewrite", "title": "a"},
+                {"action_type": "substitute", "title": "b"},
+                {"action_type": "eliminate", "title": "c"},
+            ]
+        }
+        parsed = parse_lss_output(json.dumps(payload))
+
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0].title, "a")
+        self.assertEqual(parsed[1].title, "b")
 
     def test_prompts_are_compact_structured_contracts(self) -> None:
         state = create_initial_state("Solve x+1=2", "equation")
@@ -106,6 +120,12 @@ class TestPromptParserPhase15(unittest.TestCase):
         )
         self.assertIn("example_output", pct)
         self.assertEqual(lss["constraints"]["max_candidates"], 2)
+        self.assertEqual(lss["constraints"]["preferred_candidates"], 1)
+        self.assertEqual(
+            sorted(lss["output_schema"]["actions"][0].keys()),
+            ["action_type", "added_constraints", "added_facts", "title"],
+        )
+        self.assertEqual(len(lss["example_outputs"]), 2)
 
 
 if __name__ == "__main__":
