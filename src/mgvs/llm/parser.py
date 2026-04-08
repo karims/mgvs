@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,8 +44,8 @@ class PCTUpdate:
 
     strategy_tags: list[str] = field(default_factory=list)
     open_goals: list[str] = field(default_factory=list)
-    added_facts: list[str] = field(default_factory=list)
-    added_constraints: list[str] = field(default_factory=list)
+    candidate_equations: list[str] = field(default_factory=list)
+    answer_candidate: int | None = None
 
 
 def parse_structured_json_object(text: str) -> dict[str, Any]:
@@ -175,25 +176,15 @@ def parse_pct_output(text: str) -> PCTUpdate:
     """Parse PCT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
-    strategy_tags = _string_list(_first_present(obj, ["strategy_tags", "tags"]))
-    open_goals = _string_list(_first_present(obj, ["open_goals", "focus_goals"]))
-    tactic_candidates = obj.get("tactic_candidates")
-    if isinstance(tactic_candidates, list):
-        for candidate in tactic_candidates:
-            if not isinstance(candidate, dict):
-                continue
-            tag = str(candidate.get("tag", "")).strip()
-            goal = str(candidate.get("goal", "")).strip()
-            if tag:
-                strategy_tags.append(tag)
-            if goal:
-                open_goals.append(goal)
+    if not obj:
+        return PCTUpdate(answer_candidate=_extract_pct_answer_candidate(text))
 
+    answer_candidate = _int_or_none(obj.get("answer_candidate"))
     return PCTUpdate(
-        strategy_tags=strategy_tags,
-        open_goals=open_goals,
-        added_facts=_string_list(_first_present(obj, ["added_facts", "facts"])),
-        added_constraints=_string_list(_first_present(obj, ["added_constraints", "constraints"])),
+        strategy_tags=_string_list(obj.get("strategy_tags")),
+        open_goals=_string_list(obj.get("open_goals")),
+        candidate_equations=_string_list(obj.get("candidate_equations")),
+        answer_candidate=answer_candidate,
     )
 
 
@@ -203,11 +194,41 @@ def apply_pct_update(state: ReasoningState, update: PCTUpdate) -> ReasoningState
     next_state = state.clone()
     next_state.strategy_tags.extend(update.strategy_tags)
     next_state.open_goals.extend(update.open_goals)
-    for fact in update.added_facts:
-        next_state.add_fact(fact)
-    for constraint in update.added_constraints:
-        next_state.add_constraint(constraint)
+    next_state.current_equations.extend(update.candidate_equations)
+    if update.answer_candidate is not None:
+        next_state.add_fact(f"answer_candidate = {update.answer_candidate}")
     return next_state
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Convert payload value to int when it is clearly integer-like."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"[-+]?\d+", stripped):
+            try:
+                return int(stripped)
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_pct_answer_candidate(text: str) -> int | None:
+    """Extract integer answer candidate from raw non-JSON PCT text."""
+
+    match = re.search(r"(?:\*\*)?\banswer\b(?:\*\*)?\s*:\s*([-+]?\d+)", text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def parse_lss_output(text: str) -> list[CandidateAction]:

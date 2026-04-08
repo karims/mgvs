@@ -31,11 +31,10 @@ class TestPromptParserPhase15(unittest.TestCase):
 
     def test_pct_tactic_extraction(self) -> None:
         payload = {
-            "tactic_candidates": [
-                {"tag": "eliminate", "goal": "remove y", "priority": 1},
-                {"tag": "substitute", "goal": "isolate x", "priority": 2},
-            ],
-            "focus_goals": ["finish solve"],
+            "strategy_tags": ["eliminate", "substitute"],
+            "open_goals": ["remove y", "finish solve"],
+            "candidate_equations": ["x+y=10"],
+            "answer_candidate": 50,
         }
         parsed = parse_pct_output(json.dumps(payload))
 
@@ -43,6 +42,16 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertIn("substitute", parsed.strategy_tags)
         self.assertIn("remove y", parsed.open_goals)
         self.assertIn("finish solve", parsed.open_goals)
+        self.assertEqual(parsed.candidate_equations, ["x+y=10"])
+        self.assertEqual(parsed.answer_candidate, 50)
+
+    def test_pct_answer_fallback_from_non_json_text(self) -> None:
+        parsed = parse_pct_output("We can solve the system directly. **Answer: 50**")
+
+        self.assertEqual(parsed.strategy_tags, [])
+        self.assertEqual(parsed.open_goals, [])
+        self.assertEqual(parsed.candidate_equations, [])
+        self.assertEqual(parsed.answer_candidate, 50)
 
     def test_lss_candidate_action_parsing(self) -> None:
         payload = {
@@ -91,6 +100,11 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(pct["contract"], "pct_v2")
         self.assertEqual(lss["contract"], "lss_v2")
         self.assertEqual(pct["constraints"]["max_tactics"], 3)
+        self.assertEqual(
+            sorted(pct["output_schema"].keys()),
+            ["answer_candidate", "candidate_equations", "open_goals", "strategy_tags"],
+        )
+        self.assertIn("example_output", pct)
         self.assertEqual(lss["constraints"]["max_candidates"], 2)
 
 

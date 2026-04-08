@@ -66,19 +66,24 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
         "context": context,
         "output_schema": {
             "strategy_tags": ["actionable_tag"],
-            "tactic_candidates": [
-                {
-                    "tag": "actionable_tag",
-                    "goal": "short_goal",
-                    "priority": 1,
-                }
-            ],
-            "focus_goals": ["goal"],
+            "open_goals": ["short_goal"],
+            "candidate_equations": ["short_equation"],
+            "answer_candidate": None,
+        },
+        "example_output": {
+            "strategy_tags": ["substitute", "eliminate"],
+            "open_goals": ["isolate x", "reduce to one equation"],
+            "candidate_equations": ["x + y = 10"],
+            "answer_candidate": None,
         },
         "instructions": [
             "Return JSON only.",
-            "At most max_tactics tactic candidates.",
-            "Prefer tags/goals, avoid essays.",
+            "Do not include markdown fences.",
+            "Do not include prose explanation.",
+            "Do not include a full derivation.",
+            "Keep the object small and concise.",
+            "Use only these top-level keys: strategy_tags, open_goals, candidate_equations, answer_candidate.",
+            "If no integer answer candidate is available, set answer_candidate to null.",
         ],
     }
     return _json_block(contract)
@@ -140,7 +145,7 @@ def build_stage_system_prompt(stage: str) -> str:
     if stage == STAGE_PT:
         return f"{base} Extract objects, equations, constraints, witnesses, and goals."
     if stage == STAGE_PCT:
-        return f"{base} Propose concept/tactic tags and incremental goals."
+        return f"{base} Return only a tiny JSON object with strategy tags, open goals, candidate equations, and optional integer answer candidate."
     if stage == STAGE_LSS:
         return f"{base} Propose bounded candidate actions only."
     return base

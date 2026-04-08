@@ -32,7 +32,6 @@ class TestLLMPhase5(unittest.TestCase):
 
         self.assertIn("isolate_variable", updated.strategy_tags)
         self.assertIn("isolate x", updated.open_goals)
-        self.assertIn("equation is linear", updated.derived_facts)
 
     def test_lss_actions_drive_controller(self) -> None:
         state = create_initial_state(raw_problem="Solve x + 1 = 2", target_type="equation")
