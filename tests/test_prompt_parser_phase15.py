@@ -14,20 +14,27 @@ class TestPromptParserPhase15(unittest.TestCase):
 
     def test_pt_structured_parse(self) -> None:
         payload = {
-            "unknowns": ["x"],
-            "targets": ["solve x"],
-            "facts": ["x is integer"],
-            "constraints": {"domain": ["x>=0"], "global": ["sum fixed"]},
-            "equations": ["x+1=2"],
-            "symbolic_objects": {"x": {"kind": "scalar"}},
+            "entities": ["x"],
+            "target": "solve x",
+            "constraints": ["x+1=2", "x>=0"],
         }
         parsed = parse_pt_output(json.dumps(payload))
 
-        self.assertEqual(parsed.current_equations, ["x+1=2"])
-        self.assertEqual(parsed.domain_constraints, ["x>=0"])
-        self.assertEqual(parsed.global_constraints, ["sum fixed"])
+        self.assertIn("x", parsed.symbolic_objects)
+        self.assertEqual(parsed.current_equations, [])
+        self.assertEqual(parsed.domain_constraints, ["x+1=2", "x>=0"])
+        self.assertEqual(parsed.global_constraints, [])
         self.assertEqual(parsed.open_goals, ["solve x"])
-        self.assertEqual(parsed.derived_facts, ["x is integer"])
+        self.assertEqual(parsed.derived_facts, [])
+
+    def test_pt_defaults_missing_fields(self) -> None:
+        parsed = parse_pt_output("{}")
+
+        self.assertEqual(parsed.symbolic_objects, {})
+        self.assertEqual(parsed.current_equations, [])
+        self.assertEqual(parsed.domain_constraints, [])
+        self.assertEqual(parsed.global_constraints, [])
+        self.assertEqual(parsed.open_goals, [])
 
     def test_pct_tactic_extraction(self) -> None:
         payload = {

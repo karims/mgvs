@@ -133,6 +133,21 @@ def parse_pt_output(text: str) -> PTUpdate:
     """Parse PT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
+    entities = _string_list(_first_present(obj, ["entities", "unknowns"]))
+    target = str(_first_present(obj, ["target"]) or "").strip()
+    flat_constraints = _string_list(_first_present(obj, ["constraints"]))
+
+    if entities or target or flat_constraints:
+        return PTUpdate(
+            symbolic_objects={name: {"kind": "entity"} for name in entities},
+            current_equations=[],
+            domain_constraints=flat_constraints,
+            global_constraints=[],
+            witness_parameters={},
+            open_goals=[target] if target else [],
+            derived_facts=[],
+        )
+
     constraints_obj = obj.get("constraints")
     domain_constraints: list[str] = []
     global_constraints: list[str] = []

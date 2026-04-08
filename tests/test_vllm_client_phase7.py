@@ -21,12 +21,9 @@ class TestVLLMClientPhase7(unittest.TestCase):
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "symbolic_objects": {"x": {"kind": "scalar"}},
-                                    "current_equations": ["x+1=2"],
-                                    "domain_constraints": [],
-                                    "global_constraints": [],
-                                    "witness_parameters": {},
-                                    "open_goals": ["solve for x"],
+                                    "entities": ["x"],
+                                    "target": "solve for x",
+                                    "constraints": ["x+1=2"],
                                 }
                             )
                         }
@@ -42,7 +39,7 @@ class TestVLLMClientPhase7(unittest.TestCase):
         parsed = parse_pt_output(output)
 
         self.assertIn("x", parsed.symbolic_objects)
-        self.assertIn("x+1=2", parsed.current_equations)
+        self.assertIn("x+1=2", parsed.domain_constraints)
 
     def test_partial_json_recovery_from_wrapped_content(self) -> None:
         def transport(endpoint, payload, headers, timeout):

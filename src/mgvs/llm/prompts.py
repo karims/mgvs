@@ -29,21 +29,22 @@ def build_pt_prompt(raw_problem: str, target_type: str) -> str:
             "target_type": target_type,
         },
         "output_schema": {
-            "unknowns": ["symbol"],
-            "targets": ["target"],
-            "facts": ["fact"],
-            "constraints": {
-                "domain": ["constraint"],
-                "global": ["constraint"],
-            },
-            "symbolic_objects": {"name": {"kind": "type", "attrs": {"key": "value"}}},
-            "equations": ["equation"],
+            "entities": ["entity"],
+            "target": "short target",
+            "constraints": ["constraint"],
+        },
+        "example_output": {
+            "entities": ["x"],
+            "target": "solve for x",
+            "constraints": ["x + 1 = 2"],
         },
         "instructions": [
             "Return JSON only.",
-            "No free-form reasoning paragraphs.",
-            "Use short machine-friendly tokens.",
             "Do not include markdown fences.",
+            "Do not include derivations.",
+            "Do not include explanations.",
+            "Do not include prose outside the JSON fields.",
+            "Keep the object lightweight and concise.",
         ],
     }
     return _json_block(contract)
@@ -166,7 +167,7 @@ def build_stage_system_prompt(stage: str) -> str:
         "Respond with JSON only and no markdown fences."
     )
     if stage == STAGE_PT:
-        return f"{base} Extract objects, equations, constraints, witnesses, and goals."
+        return f"{base} Return only entities, target, and constraints as a tiny JSON object."
     if stage == STAGE_PCT:
         return f"{base} Return only a tiny JSON object with strategy tags, open goals, candidate equations, and optional integer answer candidate."
     if stage == STAGE_LSS:
