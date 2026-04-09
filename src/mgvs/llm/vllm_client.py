@@ -96,12 +96,28 @@ class VLLMClient(UnifiedLLMClient):
 
         return cls(runtime=VLLMRuntimeConfig.from_env())
 
-    def with_overrides(self, *, retries: int | None = None) -> "VLLMClient":
+    def with_overrides(
+        self,
+        *,
+        retries: int | None = None,
+        pt_retries: int | None = None,
+        pct_retries: int | None = None,
+        lss_retries: int | None = None,
+        debug_single_path: bool | None = None,
+    ) -> "VLLMClient":
         """Create a copy with runtime overrides while reusing transport."""
 
         runtime = self._runtime
         if retries is not None:
             runtime = replace(runtime, retries=max(0, int(retries)))
+        if pt_retries is not None:
+            runtime = replace(runtime, pt_retries=max(0, int(pt_retries)))
+        if pct_retries is not None:
+            runtime = replace(runtime, pct_retries=max(0, int(pct_retries)))
+        if lss_retries is not None:
+            runtime = replace(runtime, lss_retries=max(0, int(lss_retries)))
+        if debug_single_path is not None:
+            runtime = replace(runtime, debug_single_path=bool(debug_single_path))
         return VLLMClient(runtime=runtime, transport=self._transport)
 
     def generate_pt(self, prompt: str) -> str:

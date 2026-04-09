@@ -1,7 +1,10 @@
-"""Phase 12 tests for runtime budgets, caching, and hardened inference behavior."""
+"""Phase 12 tests for runtime budgets, caching, hardened inference, and debug flow."""
 
 import json
+import os
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 
 from mgvs.actions.models import ActionType, CandidateAction
@@ -9,7 +12,15 @@ from mgvs.config import VLLMRuntimeConfig
 from mgvs.llm.prompts import build_lss_prompt
 from mgvs.llm.vllm_client import VLLMClient
 from mgvs.search.controller import ControllerConfig, run_search
-from mgvs.solve.runner import DomainAwareProposer, RunAttemptContext, SolveConfig, reset_runtime_state, solve
+from mgvs.solve.runner import (
+    DomainAwareProposer,
+    RunAttemptContext,
+    SolveConfig,
+    TrackingCompositeVerifier,
+    build_default_verifier,
+    reset_runtime_state,
+    solve,
+)
 from mgvs.state.models import create_initial_state
 from mgvs.state.trace import TraceStep
 from mgvs.types import StateStatus
@@ -84,6 +95,20 @@ class _LoopProposer:
                 outputs=["nf"],
             )
         ]
+
+
+class _NoActionClient:
+    def generate_pt(self, prompt: str) -> str:
+        _ = prompt
+        return '{"symbolic_objects":{},"current_equations":[],"open_goals":["g"],"domain_constraints":[],"global_constraints":[],"witness_parameters":{}}'
+
+    def generate_pct(self, prompt: str) -> str:
+        _ = prompt
+        return '{"strategy_tags":[],"open_goals":["g"],"added_facts":[],"added_constraints":[]}'
+
+    def generate_lss(self, prompt: str) -> str:
+        _ = prompt
+        return '{"actions":[]}'
 
 
 class TestRuntimePhase12(unittest.TestCase):
@@ -181,6 +206,11 @@ class TestRuntimePhase12(unittest.TestCase):
         self.assertEqual(first_prompt["constraints"]["max_candidates"], 1)
         self.assertEqual(second_prompt["constraints"]["max_candidates"], 1)
         self.assertIn("actions", json.loads(raw))
+
+    def test_vllm_runtime_config_reads_debug_single_path_from_env(self) -> None:
+        with patch.dict(os.environ, {"MGVS_DEBUG_SINGLE_PATH": "1"}, clear=False):
+            cfg = VLLMRuntimeConfig.from_env()
+        self.assertTrue(cfg.debug_single_path)
 
     def test_duplicate_lss_action_is_rejected(self) -> None:
         state = create_initial_state("p", "proof")
@@ -377,6 +407,60 @@ class TestRuntimePhase12(unittest.TestCase):
         actions = proposer.propose(state, 0)
         self.assertEqual(len(actions), 2)
         self.assertEqual(actions[0].title, "fresh_bound")
+
+    def test_debug_single_path_disables_fallback_attempt(self) -> None:
+        result = solve(
+            "custom unsolved",
+            config=SolveConfig(requested_mode="balanced", debug_single_path=True),
+            client=_NoActionClient(),
+        )
+
+        self.assertFalse(result.fallback_used)
+        self.assertEqual(result.solve_mode, "balanced")
+        self.assertEqual(result.fallback_reason, "")
+
+    def test_local_verifier_rejection_logs_title_type_and_reason(self) -> None:
+        state = create_initial_state("Solve x + 1 = 2", "equation")
+        state.open_goals.append("isolate x")
+
+        class _InvalidLSSClient:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "rewrite",
+                                "title": "bad_rewrite",
+                                "added_facts": ["x = 1"],
+                                "added_constraints": [],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_InvalidLSSClient(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="verify",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+        verifier = TrackingCompositeVerifier(build_default_verifier())
+        action = proposer.propose(state, 0)[0]
+
+        with patch.dict(os.environ, {"MGVS_DEBUG_RUNTIME": "1"}, clear=False):
+            buffer = StringIO()
+            with redirect_stdout(buffer):
+                accepted = verifier.is_action_valid(state, action)
+
+        output = buffer.getvalue()
+        self.assertFalse(accepted)
+        self.assertIn("local_reject", output)
+        self.assertIn("bad_rewrite", output)
+        self.assertIn("rewrite", output)
+        self.assertIn("malformed_action", output)
 
 
 if __name__ == "__main__":

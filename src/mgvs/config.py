@@ -184,6 +184,7 @@ class VLLMRuntimeConfig:
     pct_retries: int = 2
     lss_retries: int = 2
     lss_retry_candidate_decay: float = 0.5
+    debug_single_path: bool = False
 
     @classmethod
     def from_env(cls) -> "VLLMRuntimeConfig":
@@ -204,6 +205,7 @@ class VLLMRuntimeConfig:
             pct_retries=int(os.getenv("MGVS_VLLM_PCT_RETRIES", "2")),
             lss_retries=int(os.getenv("MGVS_VLLM_LSS_RETRIES", "2")),
             lss_retry_candidate_decay=float(os.getenv("MGVS_VLLM_LSS_RETRY_DECAY", "0.5")),
+            debug_single_path=os.getenv("MGVS_DEBUG_SINGLE_PATH", "0").strip().lower() in {"1", "true", "yes", "on"},
         )
 
 

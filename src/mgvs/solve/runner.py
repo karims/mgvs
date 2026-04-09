@@ -62,6 +62,7 @@ class SolveConfig:
     session_max_wall_time_s: float = 0.0
     requested_mode: str = "auto"
     policy_config: SolvePolicyConfig = field(default_factory=SolvePolicyConfig.default)
+    debug_single_path: bool = False
 
     @classmethod
     def from_env(cls, *, target_type: str = "unspecified") -> "SolveConfig":
@@ -77,6 +78,7 @@ class SolveConfig:
             session_max_wall_time_s=budget.session_max_wall_time_s,
             requested_mode="auto",
             policy_config=SolvePolicyConfig.from_env(),
+            debug_single_path=os.getenv("MGVS_DEBUG_SINGLE_PATH", "0").strip().lower() in {"1", "true", "yes", "on"},
         )
 
 
@@ -138,6 +140,13 @@ class TrackingCompositeVerifier:
         result = self._verifier.verify_action(state, action)
         self._record_rejections(result)
         if not result.passed:
+            failure = result.first_failure
+            if failure is not None and failure.level == "local":
+                _debug_runtime_print(
+                    "[runner][verify] local_reject "
+                    f"action_title={action.title!r} action_type={action.action_type.value} "
+                    f"reason={failure.reason}"
+                )
             return False
 
         for plugin in self._domain_plugins:
@@ -459,6 +468,8 @@ def solve(
         f"[runner] solve start target_type={cfg.target_type} requested_mode={cfg.requested_mode} "
         f"client={llm_client.__class__.__name__}"
     )
+    if cfg.debug_single_path:
+        print("debug_single_path enabled: retries=1, fallback_disabled=true")
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
         return _budget_exhausted_solve_result(raw_problem=raw_problem, target_type=cfg.target_type)
@@ -483,6 +494,8 @@ def solve(
         current_mode=mode_selection.mode,
         config=cfg.policy_config,
     )
+    if cfg.debug_single_path:
+        return primary
     if not fallback.trigger or fallback.fallback_mode is None:
         return primary
 
@@ -548,7 +561,7 @@ def _run_attempt(
     """Execute one mode-configured solve attempt."""
 
     mode_settings = mode_settings_for(mode_selection.mode, cfg.policy_config)
-    active_client = _client_for_mode(llm_client, mode_settings)
+    active_client = _client_for_mode(llm_client, mode_settings, debug_single_path=cfg.debug_single_path)
     cache_prefix = f"{active_client.__class__.__name__}:{mode_selection.mode.value}"
     _debug_runtime_print(
         f"[runner] attempt mode={mode_selection.mode.value} reason={mode_selection.reason} "
@@ -671,10 +684,23 @@ def _resolve_mode_selection(
     return select_solve_mode(problem_text, state, cfg.policy_config, budget_pressure=budget_pressure)
 
 
-def _client_for_mode(client: UnifiedLLMClient, mode_settings: SolveModeSettings) -> UnifiedLLMClient:
+def _client_for_mode(
+    client: UnifiedLLMClient,
+    mode_settings: SolveModeSettings,
+    *,
+    debug_single_path: bool = False,
+) -> UnifiedLLMClient:
     """Apply mode-specific client overrides when supported."""
 
     if isinstance(client, VLLMClient):
+        if debug_single_path or client._runtime.debug_single_path:
+            return client.with_overrides(
+                retries=0,
+                pt_retries=0,
+                pct_retries=0,
+                lss_retries=0,
+                debug_single_path=True,
+            )
         return client.with_overrides(retries=mode_settings.llm_retries)
     return client
 
