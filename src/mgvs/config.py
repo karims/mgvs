@@ -175,8 +175,14 @@ class VLLMRuntimeConfig:
     model_name: str = "default"
     temperature: float = 0.0
     max_tokens: int = 512
+    pt_max_tokens: int = 512
+    pct_max_tokens: int = 512
+    lss_max_tokens: int = 256
     timeout: float = 30.0
     retries: int = 1
+    pt_retries: int = 2
+    pct_retries: int = 2
+    lss_retries: int = 2
     lss_retry_candidate_decay: float = 0.5
 
     @classmethod
@@ -189,8 +195,14 @@ class VLLMRuntimeConfig:
             model_name=os.getenv("MGVS_VLLM_MODEL_NAME", "default"),
             temperature=float(os.getenv("MGVS_VLLM_TEMPERATURE", "0.0")),
             max_tokens=int(os.getenv("MGVS_VLLM_MAX_TOKENS", "512")),
+            pt_max_tokens=int(os.getenv("MGVS_VLLM_PT_MAX_TOKENS", "512")),
+            pct_max_tokens=int(os.getenv("MGVS_VLLM_PCT_MAX_TOKENS", "512")),
+            lss_max_tokens=int(os.getenv("MGVS_VLLM_LSS_MAX_TOKENS", "256")),
             timeout=float(os.getenv("MGVS_VLLM_TIMEOUT", "30.0")),
             retries=int(os.getenv("MGVS_VLLM_RETRIES", "1")),
+            pt_retries=int(os.getenv("MGVS_VLLM_PT_RETRIES", "2")),
+            pct_retries=int(os.getenv("MGVS_VLLM_PCT_RETRIES", "2")),
+            lss_retries=int(os.getenv("MGVS_VLLM_LSS_RETRIES", "2")),
             lss_retry_candidate_decay=float(os.getenv("MGVS_VLLM_LSS_RETRY_DECAY", "0.5")),
         )
 

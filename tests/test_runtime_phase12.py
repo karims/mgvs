@@ -159,13 +159,21 @@ class TestRuntimePhase12(unittest.TestCase):
             }
 
         client = VLLMClient(
-            runtime=VLLMRuntimeConfig(model_name="m", retries=1, lss_retry_candidate_decay=0.5),
+            runtime=VLLMRuntimeConfig(
+                model_name="m",
+                retries=1,
+                lss_retries=2,
+                lss_max_tokens=192,
+                lss_retry_candidate_decay=0.5,
+            ),
             transport=transport,
         )
         prompt = build_lss_prompt(create_initial_state("p", "proof"), max_candidates=8)
         raw = client.generate_lss(prompt)
 
         self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["max_tokens"], 192)
+        self.assertEqual(calls[1]["max_tokens"], 192)
         first_prompt = json.loads(calls[0]["messages"][1]["content"])  # type: ignore[index]
         second_prompt = json.loads(calls[1]["messages"][1]["content"])  # type: ignore[index]
         self.assertEqual(first_prompt["constraints"]["max_candidates"], 1)

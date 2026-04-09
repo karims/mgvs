@@ -156,6 +156,23 @@ class TestVLLMClientPhase7(unittest.TestCase):
 
         self.assertEqual(parse_lss_output(output), [])
 
+    def test_finish_reason_length_without_valid_json_falls_back(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {
+                "choices": [
+                    {
+                        "message": {"content": '{"actions": ['},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_lss("prompt")
+
+        self.assertEqual(parse_lss_output(output), [])
+
     def test_timeout_fallback(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout
@@ -187,7 +204,13 @@ class TestVLLMClientPhase7(unittest.TestCase):
                 "MGVS_VLLM_MODEL_NAME": "m",
                 "MGVS_VLLM_TEMPERATURE": "0.2",
                 "MGVS_VLLM_MAX_TOKENS": "256",
+                "MGVS_VLLM_PT_MAX_TOKENS": "640",
+                "MGVS_VLLM_PCT_MAX_TOKENS": "320",
+                "MGVS_VLLM_LSS_MAX_TOKENS": "192",
                 "MGVS_VLLM_TIMEOUT": "11",
+                "MGVS_VLLM_PT_RETRIES": "2",
+                "MGVS_VLLM_PCT_RETRIES": "2",
+                "MGVS_VLLM_LSS_RETRIES": "2",
             },
             clear=False,
         ):
@@ -198,7 +221,13 @@ class TestVLLMClientPhase7(unittest.TestCase):
         self.assertEqual(cfg.model_name, "m")
         self.assertEqual(cfg.temperature, 0.2)
         self.assertEqual(cfg.max_tokens, 256)
+        self.assertEqual(cfg.pt_max_tokens, 640)
+        self.assertEqual(cfg.pct_max_tokens, 320)
+        self.assertEqual(cfg.lss_max_tokens, 192)
         self.assertEqual(cfg.timeout, 11.0)
+        self.assertEqual(cfg.pt_retries, 2)
+        self.assertEqual(cfg.pct_retries, 2)
+        self.assertEqual(cfg.lss_retries, 2)
 
     def test_parser_recovery_helper(self) -> None:
         wrapped = "prefix {\"actions\":[{\"action_type\":\"rewrite\"}]} suffix"

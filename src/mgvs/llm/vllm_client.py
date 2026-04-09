@@ -122,12 +122,13 @@ class VLLMClient(UnifiedLLMClient):
     def _generate(self, *, stage: str, prompt: str) -> str:
         """Issue one structured stage request with robust fallbacks."""
 
-        attempts = max(1, 1 + int(self._runtime.retries))
+        retry_cap = min(max(0, int(self._runtime.retries)), self._stage_retry_cap(stage))
+        attempts = max(1, 1 + retry_cap)
         active_prompt = prompt
         last_reason = "unknown"
 
         for attempt in range(attempts):
-            result = self._generate_once(stage=stage, prompt=active_prompt)
+            result = self._generate_once(stage=stage, prompt=active_prompt, attempt_index=attempt, total_attempts=attempts)
             if result is not None:
                 return result
 
@@ -138,12 +139,19 @@ class VLLMClient(UnifiedLLMClient):
 
         return self._fallback_for_stage(stage, reason=last_reason)
 
-    def _generate_once(self, *, stage: str, prompt: str) -> str | None:
+    def _generate_once(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        attempt_index: int = 0,
+        total_attempts: int = 1,
+    ) -> str | None:
         """Single attempt for structured stage request."""
 
         options = LLMRequestOptions(
             temperature=self._runtime.temperature,
-            max_tokens=self._runtime.max_tokens,
+            max_tokens=self._stage_max_tokens(stage),
             timeout=self._runtime.timeout,
         )
         payload = {
@@ -164,6 +172,7 @@ class VLLMClient(UnifiedLLMClient):
 
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"\n===== GENERATE_ONCE {stage.upper()} START =====")
+            print(f"[{stage}] attempt={attempt_index + 1}/{total_attempts}")
             print(f"[{stage}] endpoint={endpoint}")
             print(f"[{stage}] model={self._runtime.model_name}")
             print(
@@ -198,6 +207,7 @@ class VLLMClient(UnifiedLLMClient):
             )
 
         selected_field, content = self._extract_message_text(response)
+        finish_reason = self._extract_finish_reason(response)
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"[{stage}] selected_response_field={selected_field}")
             print(f"\n===== RAW {stage.upper()} CONTENT START =====")
@@ -205,19 +215,30 @@ class VLLMClient(UnifiedLLMClient):
             print(f"===== RAW {stage.upper()} CONTENT END =====\n")
             print(f"[{stage}] raw_content_length={len(content)}")
             print(f"[{stage}] raw_content_repr={content!r}")
+            print(f"[{stage}] finish_reason={finish_reason}")
 
         if not content.strip():
             self._last_failure_reason = "empty_response"
             if os.environ.get("MGVS_DEBUG_LLM") == "1":
+                print(
+                    f"[{stage}] attempt_summary retry_index={attempt_index} "
+                    f"selected_response_field={selected_field} finish_reason={finish_reason} parsed_success=False"
+                )
                 print(f"[{stage}] failure_reason=empty_response")
                 print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return None
 
         parsed = parse_structured_json_object(content)
+        parsed_success = bool(parsed)
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(
                 f"[{stage}] parsed_json_keys:",
                 list(parsed.keys()) if isinstance(parsed, dict) else parsed,
+            )
+            print(
+                f"[{stage}] attempt_summary retry_index={attempt_index} "
+                f"selected_response_field={selected_field} finish_reason={finish_reason} "
+                f"parsed_success={parsed_success}"
             )
         if parsed:
             if os.environ.get("MGVS_DEBUG_LLM") == "1":
@@ -225,9 +246,11 @@ class VLLMClient(UnifiedLLMClient):
                 print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return json.dumps(parsed, sort_keys=True)
 
-        self._last_failure_reason = "malformed_json"
+        self._last_failure_reason = "truncated_output" if finish_reason == "length" else "malformed_json"
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
-            print(f"[{stage}] failure_reason=malformed_json")
+            if finish_reason == "length":
+                print(f"[{stage}] finish_reason_length_detected")
+            print(f"[{stage}] failure_reason={self._last_failure_reason}")
             print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
         return None
 
@@ -281,6 +304,41 @@ class VLLMClient(UnifiedLLMClient):
 
         _, content = VLLMClient._extract_message_text(response)
         return content
+
+    @staticmethod
+    def _extract_finish_reason(response: dict[str, Any]) -> str:
+        """Extract finish_reason from the first choice when available."""
+
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0]
+        if not isinstance(first, dict):
+            return ""
+        finish_reason = first.get("finish_reason", "")
+        return str(finish_reason) if finish_reason is not None else ""
+
+    def _stage_max_tokens(self, stage: str) -> int:
+        """Return stage-specific max_tokens with safe fallback."""
+
+        if stage == STAGE_PT:
+            return max(1, int(self._runtime.pt_max_tokens))
+        if stage == STAGE_PCT:
+            return max(1, int(self._runtime.pct_max_tokens))
+        if stage == STAGE_LSS:
+            return max(1, int(self._runtime.lss_max_tokens))
+        return max(1, int(self._runtime.max_tokens))
+
+    def _stage_retry_cap(self, stage: str) -> int:
+        """Return stage-specific retry cap with safe fallback."""
+
+        if stage == STAGE_PT:
+            return max(0, int(self._runtime.pt_retries))
+        if stage == STAGE_PCT:
+            return max(0, int(self._runtime.pct_retries))
+        if stage == STAGE_LSS:
+            return max(0, int(self._runtime.lss_retries))
+        return max(0, int(self._runtime.retries))
 
     def _reduce_lss_candidates(self, prompt: str) -> str:
         """Reduce max candidate count in LSS prompt for retry stabilization."""
