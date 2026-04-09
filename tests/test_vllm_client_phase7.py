@@ -12,6 +12,56 @@ from mgvs.llm.vllm_client import VLLMClient
 class TestVLLMClientPhase7(unittest.TestCase):
     """Validates structured generation and error fallback behavior."""
 
+    def test_extract_content_prefers_content(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"ok": 1}',
+                        "reasoning_content": '{"fallback": 2}',
+                        "reasoning": '{"fallback": 3}',
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(VLLMClient._extract_content(response), '{"ok": 1}')
+
+    def test_extract_content_uses_reasoning_content_when_content_empty(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "   ",
+                        "reasoning_content": '{"ok": 2}',
+                        "reasoning": '{"fallback": 3}',
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(VLLMClient._extract_content(response), '{"ok": 2}')
+
+    def test_extract_content_uses_reasoning_when_other_fields_empty(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": " ",
+                        "reasoning": '{"ok": 3}',
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(VLLMClient._extract_content(response), '{"ok": 3}')
+
+    def test_extract_content_returns_empty_when_no_fields_present(self) -> None:
+        response = {"choices": [{"message": {}}]}
+
+        self.assertEqual(VLLMClient._extract_content(response), "")
+
     def test_generate_pt_success(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout

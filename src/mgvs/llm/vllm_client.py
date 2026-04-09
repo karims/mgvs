@@ -158,8 +158,9 @@ class VLLMClient(UnifiedLLMClient):
                 f"{list(response.keys()) if isinstance(response, dict) else response}"
             )
 
-        content = self._extract_content(response)
+        selected_field, content = self._extract_message_text(response)
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
+            print(f"[{stage}] selected_response_field={selected_field}")
             print(f"\n===== RAW {stage.upper()} CONTENT START =====")
             print(content)
             print(f"===== RAW {stage.upper()} CONTENT END =====\n")
@@ -214,23 +215,34 @@ class VLLMClient(UnifiedLLMClient):
         return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
-    def _extract_content(response: dict[str, Any]) -> str:
-        """Extract assistant content from OpenAI-compatible response shape."""
+    def _extract_message_text(response: dict[str, Any]) -> tuple[str, str]:
+        """Extract assistant text and the source field from response shape."""
 
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
-            return ""
+            return "missing", ""
 
         first = choices[0]
         if not isinstance(first, dict):
-            return ""
+            return "missing", ""
 
         message = first.get("message")
         if not isinstance(message, dict):
-            return ""
+            return "missing", ""
 
-        content = message.get("content", "")
-        return str(content)
+        for field_name in ("content", "reasoning_content", "reasoning"):
+            raw = message.get(field_name, "")
+            text = str(raw) if raw is not None else ""
+            if text.strip():
+                return field_name, text
+        return "missing", ""
+
+    @staticmethod
+    def _extract_content(response: dict[str, Any]) -> str:
+        """Extract assistant content from OpenAI-compatible response shape."""
+
+        _, content = VLLMClient._extract_message_text(response)
+        return content
 
     def _reduce_lss_candidates(self, prompt: str) -> str:
         """Reduce max candidate count in LSS prompt for retry stabilization."""
