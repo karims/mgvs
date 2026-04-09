@@ -90,7 +90,7 @@ class TestPolicyPhase13(unittest.TestCase):
                 config=SolveConfig(requested_mode="deep", max_wall_time_s=0.5),
             )
         self.assertTrue(result.fallback_used)
-        self.assertEqual(result.fallback_reason, "budget_nearly_exhausted")
+        self.assertEqual(result.fallback_reason, "no_valid_branches_survived")
 
     def test_metadata_shows_mode_used(self) -> None:
         result = solve("Solve x + 1 = 2", config=SolveConfig(requested_mode="auto"))

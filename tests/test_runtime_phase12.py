@@ -4,12 +4,14 @@ import json
 import unittest
 from unittest.mock import patch
 
+from mgvs.actions.models import ActionType, CandidateAction
 from mgvs.config import VLLMRuntimeConfig
 from mgvs.llm.prompts import build_lss_prompt
 from mgvs.llm.vllm_client import VLLMClient
 from mgvs.search.controller import ControllerConfig, run_search
-from mgvs.solve.runner import SolveConfig, reset_runtime_state, solve
+from mgvs.solve.runner import DomainAwareProposer, RunAttemptContext, SolveConfig, reset_runtime_state, solve
 from mgvs.state.models import create_initial_state
+from mgvs.state.trace import TraceStep
 from mgvs.types import StateStatus
 
 
@@ -179,6 +181,112 @@ class TestRuntimePhase12(unittest.TestCase):
         self.assertEqual(first_prompt["constraints"]["max_candidates"], 1)
         self.assertEqual(second_prompt["constraints"]["max_candidates"], 1)
         self.assertIn("actions", json.loads(raw))
+
+    def test_duplicate_lss_action_is_rejected(self) -> None:
+        state = create_initial_state("p", "proof")
+        state.add_trace_step(
+            TraceStep(
+                action="eliminate",
+                rationale="prior step",
+                updates={
+                    "title": "eliminate_n",
+                    "added_facts": ["n is bounded"],
+                    "added_constraints": [],
+                },
+            )
+        )
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "eliminate",
+                                "title": "eliminate_n",
+                                "added_facts": ["n is bounded"],
+                                "added_constraints": [],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        self.assertEqual(proposer.propose(state, 0), [])
+
+    def test_no_new_information_action_is_rejected(self) -> None:
+        state = create_initial_state("p", "proof")
+        state.derived_facts.append("n is bounded")
+        state.domain_constraints.append("perimeters are distinct")
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "repeat_known_info",
+                                "added_facts": ["n is bounded"],
+                                "added_constraints": ["perimeters are distinct"],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        self.assertEqual(proposer.propose(state, 0), [])
+
+    def test_genuinely_new_lss_action_is_accepted(self) -> None:
+        state = create_initial_state("p", "proof")
+        state.derived_facts.append("n is bounded")
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "add_unique_perimeter_constraint",
+                                "added_facts": [],
+                                "added_constraints": ["distinct rectangles must have distinct perimeters"],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        actions = proposer.propose(state, 0)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action_type, ActionType.DERIVE_CONSTRAINT)
 
 
 if __name__ == "__main__":

@@ -212,6 +212,62 @@ def _stage_cache_disabled() -> bool:
     return os.environ.get("MGVS_DISABLE_STAGE_CACHE") == "1"
 
 
+def _normalize_items(items: list[str]) -> tuple[str, ...]:
+    """Normalize string items for stable action-signature comparison."""
+
+    return tuple(sorted(str(item).strip() for item in items if str(item).strip()))
+
+
+def _action_signature(action: CandidateAction) -> tuple[str, str, tuple[str, ...], tuple[str, ...]]:
+    """Build a canonical action signature for duplicate detection."""
+
+    return (
+        action.action_type.value,
+        action.title.strip(),
+        _normalize_items(action.added_facts),
+        _normalize_items(action.added_constraints),
+    )
+
+
+def _accepted_action_signatures(state: ReasoningState) -> set[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
+    """Build canonical signatures for accepted actions already on this path."""
+
+    signatures: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+    for step in state.accepted_steps:
+        title = str(step.updates.get("title", "")).strip()
+        if not title:
+            continue
+        raw_facts = step.updates.get("added_facts", [])
+        facts = [str(item) for item in raw_facts] if isinstance(raw_facts, list) else []
+        raw_constraints = step.updates.get("added_constraints", [])
+        constraints = [str(item) for item in raw_constraints] if isinstance(raw_constraints, list) else []
+        signatures.add((step.action, title, _normalize_items(facts), _normalize_items(constraints)))
+    return signatures
+
+
+def _action_adds_no_new_information(state: ReasoningState, action: CandidateAction) -> bool:
+    """Return True when an action adds no facts or constraints beyond current state."""
+
+    if action.action_type.value in {"branch", "prune"}:
+        return False
+    if action.outputs or action.branch_labels or action.metadata:
+        return False
+
+    known_facts = set(str(item).strip() for item in state.derived_facts + state.current_equations if str(item).strip())
+    known_constraints = set(
+        str(item).strip()
+        for item in state.domain_constraints + state.global_constraints
+        if str(item).strip()
+    )
+    normalized_facts = _normalize_items(action.added_facts)
+    normalized_constraints = _normalize_items(action.added_constraints)
+    if not normalized_facts and not normalized_constraints:
+        return True
+    facts_known = all(item in known_facts for item in normalized_facts)
+    constraints_known = all(item in known_constraints for item in normalized_constraints)
+    return facts_known and constraints_known
+
+
 @dataclass
 class RunAttemptContext:
     """Mutable execution context for one solve attempt."""
@@ -273,7 +329,25 @@ class DomainAwareProposer:
         active = active_domain_plugins(state, self._plugins)
         for plugin in active:
             actions = plugin.enrich_actions(state, actions)
-        return actions
+
+        accepted_signatures = _accepted_action_signatures(state)
+        filtered: list[CandidateAction] = []
+        seen_signatures: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+        for action in actions:
+            signature = _action_signature(action)
+            if signature in accepted_signatures or signature in seen_signatures:
+                _debug_runtime_print(
+                    f"[runner][lss] reject duplicate_action signature={signature}"
+                )
+                continue
+            if _action_adds_no_new_information(state, action):
+                _debug_runtime_print(
+                    f"[runner][lss] reject no_new_information signature={signature}"
+                )
+                continue
+            filtered.append(action)
+            seen_signatures.add(signature)
+        return filtered
 
 
 def solve(
