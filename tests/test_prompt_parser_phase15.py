@@ -52,6 +52,33 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed.candidate_equations, ["x+y=10"])
         self.assertEqual(parsed.answer_candidate, 50)
 
+    def test_pct_defaults_missing_optional_fields(self) -> None:
+        parsed = parse_pct_output(json.dumps({"strategy_tags": ["counting"]}))
+
+        self.assertEqual(parsed.strategy_tags, ["counting"])
+        self.assertEqual(parsed.open_goals, [])
+        self.assertEqual(parsed.candidate_equations, [])
+        self.assertIsNone(parsed.answer_candidate)
+
+    def test_pct_ignores_extra_keys(self) -> None:
+        parsed = parse_pct_output(
+            json.dumps(
+                {
+                    "strategy_tags": ["modular"],
+                    "open_goals": ["check residues"],
+                    "candidate_equations": [],
+                    "answer_candidate": "17",
+                    "essay": "long derivation that should be ignored",
+                    "proof": ["ignore this too"],
+                }
+            )
+        )
+
+        self.assertEqual(parsed.strategy_tags, ["modular"])
+        self.assertEqual(parsed.open_goals, ["check residues"])
+        self.assertEqual(parsed.candidate_equations, [])
+        self.assertEqual(parsed.answer_candidate, 17)
+
     def test_pct_answer_fallback_from_non_json_text(self) -> None:
         parsed = parse_pct_output("We can solve the system directly. **Answer: 50**")
 
@@ -131,7 +158,9 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(pct["output_schema"].keys()),
             ["answer_candidate", "candidate_equations", "open_goals", "strategy_tags"],
         )
-        self.assertIn("example_output", pct)
+        self.assertEqual(len(pct["example_outputs"]), 2)
+        self.assertIn("Do not solve the full problem in this stage.", pct["instructions"])
+        self.assertIn("Do not provide bullet lists.", pct["instructions"])
         self.assertEqual(pct["context"]["pt_entities"], ["x"])
         self.assertEqual(pct["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(pct["context"]["pt_target"], "solve x")
