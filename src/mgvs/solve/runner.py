@@ -243,6 +243,11 @@ class DomainAwareProposer:
     def propose(self, state: ReasoningState, depth: int) -> list[CandidateAction]:
         _ = depth
         prompt = build_lss_prompt(state, max_candidates=self._max_candidates)
+        if _debug_runtime_enabled():
+            prompt_obj = parse_structured_json_object(prompt)
+            _debug_runtime_print(
+                f"[runner][lss] prompt_context={json.dumps(prompt_obj.get('context', {}), sort_keys=True)}"
+            )
         state_key = f"{self._cache_prefix}:{_state_hash(state)}"
         cached = None if _stage_cache_disabled() else _STAGE_CACHE.get("lss", state_key)
         if cached is not None:
@@ -577,6 +582,12 @@ def _run_pct_with_cache(
     """Run PCT stage with cache keyed by normalized state hash."""
 
     key = f"{cache_prefix}:{_state_hash(state)}"
+    prompt = build_pct_prompt(state)
+    if _debug_runtime_enabled():
+        prompt_obj = parse_structured_json_object(prompt)
+        _debug_runtime_print(
+            f"[runner][pct] prompt_context={json.dumps(prompt_obj.get('context', {}), sort_keys=True)}"
+        )
     cached = None if _stage_cache_disabled() else _STAGE_CACHE.get("pct", key)
     if cached is not None:
         _debug_runtime_print(f"[runner][pct] cache_hit key={key[:16]}... len={len(cached)}")
@@ -586,7 +597,7 @@ def _run_pct_with_cache(
         )
         if _stage_cache_disabled():
             _debug_runtime_print("[runner][pct] cache_bypass enabled")
-    raw = cached if cached is not None else client.generate_pct(build_pct_prompt(state))
+    raw = cached if cached is not None else client.generate_pct(prompt)
     if cached is None and not _stage_cache_disabled():
         _STAGE_CACHE.set("pct", key, raw)
         _debug_runtime_print(f"[runner][pct] cache_store key={key[:16]}... len={len(raw)}")

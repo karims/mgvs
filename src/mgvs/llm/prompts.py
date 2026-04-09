@@ -18,6 +18,24 @@ def _json_block(payload: dict[str, object]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
+def _pt_entities(state: ReasoningState) -> list[str]:
+    """Extract PT-style entity names from the current state."""
+
+    return sorted(str(name) for name in state.symbolic_objects.keys())
+
+
+def _pt_constraints(state: ReasoningState) -> list[str]:
+    """Extract PT-style constraints from the current state."""
+
+    return list(state.domain_constraints) + list(state.global_constraints)
+
+
+def _pt_target(state: ReasoningState) -> str:
+    """Extract PT-style target from the current state."""
+
+    return state.open_goals[0] if state.open_goals else ""
+
+
 def build_pt_prompt(raw_problem: str, target_type: str) -> str:
     """Build PT prompt contract for extracting structured problem state."""
 
@@ -56,6 +74,10 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
     context = {
         "raw_problem": state.raw_problem,
         "target_type": state.target_type,
+        "pt_entities": _pt_entities(state),
+        "pt_constraints": _pt_constraints(state),
+        "pt_target": _pt_target(state),
+        "current_equations": state.current_equations,
         "derived_facts": state.derived_facts,
         "open_goals": state.open_goals,
         "strategy_tags": state.strategy_tags,
@@ -94,9 +116,15 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
     """Build LSS prompt contract for bounded candidate action synthesis."""
 
     context = {
+        "raw_problem": state.raw_problem,
         "status": state.status.value,
         "target_type": state.target_type,
+        "pt_entities": _pt_entities(state),
+        "pt_constraints": _pt_constraints(state),
+        "pt_target": _pt_target(state),
+        "current_equations": state.current_equations,
         "open_goals": state.open_goals,
+        "strategy_tags": state.strategy_tags,
         "derived_facts": state.derived_facts,
         "branch_assignments": state.branch_assignments,
     }

@@ -113,6 +113,12 @@ class TestPromptParserPhase15(unittest.TestCase):
 
     def test_prompts_are_compact_structured_contracts(self) -> None:
         state = create_initial_state("Solve x+1=2", "equation")
+        state.symbolic_objects["x"] = {"kind": "entity"}
+        state.domain_constraints.append("x+1=2")
+        state.current_equations.append("x+1=2")
+        state.open_goals.append("solve x")
+        state.strategy_tags.append("isolate_variable")
+        state.derived_facts.append("x is scalar")
         pt = json.loads(build_pt_prompt(state.raw_problem, state.target_type))
         pct = json.loads(build_pct_prompt(state, max_tactics=3))
         lss = json.loads(build_lss_prompt(state, max_candidates=2))
@@ -126,6 +132,10 @@ class TestPromptParserPhase15(unittest.TestCase):
             ["answer_candidate", "candidate_equations", "open_goals", "strategy_tags"],
         )
         self.assertIn("example_output", pct)
+        self.assertEqual(pct["context"]["pt_entities"], ["x"])
+        self.assertEqual(pct["context"]["pt_constraints"], ["x+1=2"])
+        self.assertEqual(pct["context"]["pt_target"], "solve x")
+        self.assertEqual(pct["context"]["current_equations"], ["x+1=2"])
         self.assertEqual(lss["constraints"]["max_candidates"], 2)
         self.assertEqual(lss["constraints"]["preferred_candidates"], 1)
         self.assertEqual(
@@ -133,6 +143,11 @@ class TestPromptParserPhase15(unittest.TestCase):
             ["action_type", "added_constraints", "added_facts", "title"],
         )
         self.assertEqual(len(lss["example_outputs"]), 2)
+        self.assertEqual(lss["context"]["pt_entities"], ["x"])
+        self.assertEqual(lss["context"]["pt_constraints"], ["x+1=2"])
+        self.assertEqual(lss["context"]["pt_target"], "solve x")
+        self.assertEqual(lss["context"]["strategy_tags"], ["isolate_variable"])
+        self.assertEqual(lss["context"]["derived_facts"], ["x is scalar"])
 
 
 if __name__ == "__main__":
