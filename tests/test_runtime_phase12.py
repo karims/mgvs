@@ -288,6 +288,96 @@ class TestRuntimePhase12(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0].action_type, ActionType.DERIVE_CONSTRAINT)
 
+    def test_grounded_new_action_scores_higher_than_generic_restatement(self) -> None:
+        state = create_initial_state("rectangle problem", "proof")
+        state.symbolic_objects["K"] = {"kind": "entity"}
+        state.domain_constraints.append("distinct rectangles must have distinct perimeters")
+        state.open_goals.append("find K mod 10^5")
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "restate_target",
+                                "added_facts": ["K mod 10^5 is required"],
+                                "added_constraints": [],
+                            },
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "use_unique_perimeters",
+                                "added_facts": [],
+                                "added_constraints": ["distinct rectangles imply distinct perimeter counts"],
+                            },
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=2,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        actions = proposer.propose(state, 0)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0].title, "use_unique_perimeters")
+
+    def test_repeated_action_scores_lower_than_fresh_action(self) -> None:
+        state = create_initial_state("counting problem", "proof")
+        state.add_trace_step(
+            TraceStep(
+                action="derive_constraint",
+                rationale="prior step",
+                updates={
+                    "title": "repeat_counting_relation",
+                    "added_facts": ["perimeter count is bounded"],
+                    "added_constraints": [],
+                },
+            )
+        )
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "fresh_bound",
+                                "added_facts": ["number of distinct perimeters is at most 998"],
+                                "added_constraints": [],
+                            },
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "repeat_variant",
+                                "added_facts": ["perimeter count is bounded"],
+                                "added_constraints": [],
+                            },
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=2,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        actions = proposer.propose(state, 0)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0].title, "fresh_bound")
+
 
 if __name__ == "__main__":
     unittest.main()

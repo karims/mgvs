@@ -268,6 +268,91 @@ def _action_adds_no_new_information(state: ReasoningState, action: CandidateActi
     return facts_known and constraints_known
 
 
+def _score_lss_action(state: ReasoningState, action: CandidateAction) -> tuple[float, dict[str, float]]:
+    """Compute a lightweight local relevance/novelty score for LSS actions."""
+
+    components: dict[str, float] = {}
+    score = 0.0
+
+    known_entities = set(str(name).strip().lower() for name in state.symbolic_objects.keys() if str(name).strip())
+    known_constraints = [
+        str(item).strip().lower()
+        for item in state.domain_constraints + state.global_constraints
+        if str(item).strip()
+    ]
+    known_equations = [str(item).strip().lower() for item in state.current_equations if str(item).strip()]
+    known_goals = [str(item).strip().lower() for item in state.open_goals if str(item).strip()]
+    prior_content = set(
+        str(item).strip().lower()
+        for step in state.accepted_steps
+        for key in ("added_facts", "added_constraints")
+        for item in (step.updates.get(key, []) if isinstance(step.updates.get(key, []), list) else [])
+        if str(item).strip()
+    )
+
+    added_facts = [str(item).strip() for item in action.added_facts if str(item).strip()]
+    added_constraints = [str(item).strip() for item in action.added_constraints if str(item).strip()]
+    added_text = " ".join([action.title] + added_facts + added_constraints).lower()
+
+    new_items = 0
+    for item in added_facts:
+        if item not in state.derived_facts and item not in state.current_equations:
+            new_items += 1
+    for item in added_constraints:
+        if item not in state.domain_constraints and item not in state.global_constraints:
+            new_items += 1
+    if new_items:
+        components["new_information"] = 1.5 * new_items
+        score += components["new_information"]
+
+    if known_entities and any(entity in added_text for entity in known_entities):
+        components["entity_grounding"] = 0.75
+        score += components["entity_grounding"]
+
+    if any(constraint and constraint in added_text for constraint in known_constraints):
+        components["constraint_grounding"] = 0.75
+        score += components["constraint_grounding"]
+
+    if any(equation and equation in added_text for equation in known_equations):
+        components["equation_relevance"] = 0.5
+        score += components["equation_relevance"]
+
+    if any(goal and goal in added_text for goal in known_goals):
+        components["goal_relevance"] = 0.5
+        score += components["goal_relevance"]
+
+    if action.action_type.value in {"derive_constraint", "rewrite", "substitute", "eliminate"}:
+        components["preferred_action_type"] = 0.25
+        score += components["preferred_action_type"]
+
+    target_text = known_goals[0] if known_goals else ""
+    target_only = False
+    if target_text:
+        target_tokens = [token for token in target_text.split() if token]
+        if target_tokens and any(token in added_text for token in target_tokens):
+            grounded_elsewhere = any(constraint and constraint in added_text for constraint in known_constraints) or any(
+                equation and equation in added_text for equation in known_equations
+            )
+            if not grounded_elsewhere:
+                target_only = True
+    if target_only:
+        components["target_restatement_penalty"] = -1.5
+        score += components["target_restatement_penalty"]
+
+    boilerplate_tokens = ("mod", "modular", "parity", "even", "odd")
+    if any(token in added_text for token in boilerplate_tokens):
+        grounded_to_context = any(token in item for token in known_constraints + known_equations + known_goals for token in boilerplate_tokens)
+        if not grounded_to_context:
+            components["generic_boilerplate_penalty"] = -0.75
+            score += components["generic_boilerplate_penalty"]
+
+    if any(item.lower() in prior_content for item in added_facts + added_constraints):
+        components["repeated_content_penalty"] = -1.0
+        score += components["repeated_content_penalty"]
+
+    return score, components
+
+
 @dataclass
 class RunAttemptContext:
     """Mutable execution context for one solve attempt."""
@@ -347,7 +432,17 @@ class DomainAwareProposer:
                 continue
             filtered.append(action)
             seen_signatures.add(signature)
-        return filtered
+
+        scored: list[tuple[float, CandidateAction]] = []
+        for action in filtered:
+            action_score, components = _score_lss_action(state, action)
+            _debug_runtime_print(
+                f"[runner][lss] score title={action.title} total={action_score:.2f} components={components}"
+            )
+            scored.append((action_score, action))
+
+        scored.sort(key=lambda item: (item[0], item[1].title), reverse=True)
+        return [action for _, action in scored]
 
 
 def solve(
