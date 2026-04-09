@@ -62,6 +62,41 @@ class TestVLLMClientPhase7(unittest.TestCase):
 
         self.assertEqual(VLLMClient._extract_content(response), "")
 
+    def test_extract_content_uses_reasoning_object_payload(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": {
+                            "constraints": ["x+1=2"],
+                            "entities": ["x"],
+                            "target": "solve x",
+                        },
+                    }
+                }
+            ]
+        }
+
+        extracted = VLLMClient._extract_content(response)
+        self.assertIn('"entities": ["x"]', extracted)
+
+    def test_extract_content_uses_reasoning_content_block_list(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": [
+                            {"type": "text", "text": '{"strategy_tags":["tag_a"]}'},
+                        ],
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(VLLMClient._extract_content(response), '{"strategy_tags":["tag_a"]}')
+
     def test_generate_pt_success(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout

@@ -39,6 +39,45 @@ def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
     return redacted
 
 
+def _normalize_message_field(raw: Any) -> str:
+    """Normalize assistant message field content to text safely."""
+
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            for key in ("text", "content", "reasoning", "reasoning_content"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value)
+                    break
+        if parts:
+            return "\n".join(parts)
+        try:
+            return json.dumps(raw)
+        except (TypeError, ValueError):
+            return str(raw)
+    if isinstance(raw, dict):
+        for key in ("text", "content", "reasoning", "reasoning_content"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        try:
+            return json.dumps(raw)
+        except (TypeError, ValueError):
+            return str(raw)
+    return str(raw)
+
+
 class VLLMClient(UnifiedLLMClient):
     """vLLM-backed unified PT/PCT/LSS client using chat-completions API."""
 
@@ -231,8 +270,7 @@ class VLLMClient(UnifiedLLMClient):
             return "missing", ""
 
         for field_name in ("content", "reasoning_content", "reasoning"):
-            raw = message.get(field_name, "")
-            text = str(raw) if raw is not None else ""
+            text = _normalize_message_field(message.get(field_name, ""))
             if text.strip():
                 return field_name, text
         return "missing", ""
