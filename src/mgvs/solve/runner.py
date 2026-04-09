@@ -238,6 +238,16 @@ def _action_signature(action: CandidateAction) -> tuple[str, str, tuple[str, ...
     )
 
 
+def _semantic_action_signature(action: CandidateAction) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Build a title-independent action signature for semantic duplicate detection."""
+
+    return (
+        action.action_type.value,
+        _normalize_items(action.added_facts),
+        _normalize_items(action.added_constraints),
+    )
+
+
 def _accepted_action_signatures(state: ReasoningState) -> set[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
     """Build canonical signatures for accepted actions already on this path."""
 
@@ -254,6 +264,40 @@ def _accepted_action_signatures(state: ReasoningState) -> set[tuple[str, str, tu
     return signatures
 
 
+def _accepted_semantic_action_signatures(state: ReasoningState) -> set[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    """Build title-independent signatures for prior accepted actions on this path."""
+
+    signatures: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+    for step in state.accepted_steps:
+        raw_facts = step.updates.get("added_facts", [])
+        facts = [str(item) for item in raw_facts] if isinstance(raw_facts, list) else []
+        raw_constraints = step.updates.get("added_constraints", [])
+        constraints = [str(item) for item in raw_constraints] if isinstance(raw_constraints, list) else []
+        signatures.add((step.action, _normalize_items(facts), _normalize_items(constraints)))
+    return signatures
+
+
+def _is_equation_restatement(state: ReasoningState, action: CandidateAction) -> bool:
+    """Return True when an action just copies current equations back into state fields."""
+
+    known_equations = set(str(item).strip() for item in state.current_equations if str(item).strip())
+    if not known_equations:
+        return False
+
+    normalized_facts = _normalize_items(action.added_facts)
+    normalized_constraints = _normalize_items(action.added_constraints)
+    if not normalized_facts and not normalized_constraints:
+        return False
+
+    facts_are_equations = bool(normalized_facts) and all(item in known_equations for item in normalized_facts)
+    constraints_are_equations = bool(normalized_constraints) and all(
+        item in known_equations for item in normalized_constraints
+    )
+    if facts_are_equations and constraints_are_equations:
+        return True
+    return False
+
+
 def _action_adds_no_new_information(state: ReasoningState, action: CandidateAction) -> bool:
     """Return True when an action adds no facts or constraints beyond current state."""
 
@@ -265,11 +309,13 @@ def _action_adds_no_new_information(state: ReasoningState, action: CandidateActi
     known_facts = set(str(item).strip() for item in state.derived_facts + state.current_equations if str(item).strip())
     known_constraints = set(
         str(item).strip()
-        for item in state.domain_constraints + state.global_constraints
+        for item in state.domain_constraints + state.global_constraints + state.current_equations
         if str(item).strip()
     )
     normalized_facts = _normalize_items(action.added_facts)
     normalized_constraints = _normalize_items(action.added_constraints)
+    if _is_equation_restatement(state, action):
+        return True
     if not normalized_facts and not normalized_constraints:
         return True
     facts_known = all(item in known_facts for item in normalized_facts)
@@ -425,22 +471,43 @@ class DomainAwareProposer:
             actions = plugin.enrich_actions(state, actions)
 
         accepted_signatures = _accepted_action_signatures(state)
+        accepted_semantic_signatures = _accepted_semantic_action_signatures(state)
         filtered: list[CandidateAction] = []
         seen_signatures: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+        seen_semantic_signatures: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
         for action in actions:
             signature = _action_signature(action)
+            semantic_signature = _semantic_action_signature(action)
             if signature in accepted_signatures or signature in seen_signatures:
                 _debug_runtime_print(
-                    f"[runner][lss] reject duplicate_action signature={signature}"
+                    f"[runner][lss] reject duplicate_action title={action.title!r} "
+                    f"action_type={action.action_type.value} signature={signature}"
+                )
+                continue
+            if (
+                action.action_type.value in {"eliminate", "substitute"}
+                and (semantic_signature in accepted_semantic_signatures or semantic_signature in seen_semantic_signatures)
+            ):
+                _debug_runtime_print(
+                    f"[runner][lss] reject duplicate_action_semantic title={action.title!r} "
+                    f"action_type={action.action_type.value} signature={semantic_signature}"
+                )
+                continue
+            if _is_equation_restatement(state, action):
+                _debug_runtime_print(
+                    f"[runner][lss] reject equation_restatement title={action.title!r} "
+                    f"action_type={action.action_type.value}"
                 )
                 continue
             if _action_adds_no_new_information(state, action):
                 _debug_runtime_print(
-                    f"[runner][lss] reject no_new_information signature={signature}"
+                    f"[runner][lss] reject no_new_information title={action.title!r} "
+                    f"action_type={action.action_type.value} signature={signature}"
                 )
                 continue
             filtered.append(action)
             seen_signatures.add(signature)
+            seen_semantic_signatures.add(semantic_signature)
 
         scored: list[tuple[float, CandidateAction]] = []
         for action in filtered:
@@ -469,7 +536,11 @@ def solve(
         f"client={llm_client.__class__.__name__}"
     )
     if cfg.debug_single_path:
-        print("debug_single_path enabled: retries=1, fallback_disabled=true")
+        print(
+            "debug_single_path enabled: "
+            "retries={pt:0,pct:0,lss:0}, token_caps={pt:512,pct:512,lss:256}, "
+            "beam_width=1, candidate_cap_per_state=1, fallback_disabled=true"
+        )
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
         return _budget_exhausted_solve_result(raw_problem=raw_problem, target_type=cfg.target_type)
@@ -561,6 +632,10 @@ def _run_attempt(
     """Execute one mode-configured solve attempt."""
 
     mode_settings = mode_settings_for(mode_selection.mode, cfg.policy_config)
+    effective_beam_width = 1 if cfg.debug_single_path else min(cfg.beam_width, mode_settings.beam_width)
+    effective_candidate_cap = 1 if cfg.debug_single_path else min(
+        cfg.max_candidates, mode_settings.max_candidates_per_state
+    )
     active_client = _client_for_mode(llm_client, mode_settings, debug_single_path=cfg.debug_single_path)
     cache_prefix = f"{active_client.__class__.__name__}:{mode_selection.mode.value}"
     _debug_runtime_print(
@@ -628,7 +703,7 @@ def _run_attempt(
     proposer = DomainAwareProposer(
         client=active_client,
         plugins=plugins,
-        max_candidates=min(cfg.max_candidates, mode_settings.max_candidates_per_state),
+        max_candidates=effective_candidate_cap,
         cache_prefix=cache_prefix,
         allow_expensive_branching=mode_settings.allow_expensive_branching,
         attempt_context=attempt_context,
@@ -641,9 +716,9 @@ def _run_attempt(
         canonicalizer=DefaultStateCanonicalizer(),
         config=ControllerConfig(
             max_depth=min(cfg.max_depth, mode_settings.max_depth),
-            beam_width=min(cfg.beam_width, mode_settings.beam_width),
+            beam_width=effective_beam_width,
             max_wall_time_s=cfg.max_wall_time_s,
-            candidate_cap_per_state=min(cfg.max_candidates, mode_settings.max_candidates_per_state),
+            candidate_cap_per_state=effective_candidate_cap,
         ),
     )
 
@@ -699,6 +774,9 @@ def _client_for_mode(
                 pt_retries=0,
                 pct_retries=0,
                 lss_retries=0,
+                pt_max_tokens=512,
+                pct_max_tokens=512,
+                lss_max_tokens=256,
                 debug_single_path=True,
             )
         return client.with_overrides(retries=mode_settings.llm_retries)

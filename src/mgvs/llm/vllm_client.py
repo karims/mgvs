@@ -103,6 +103,9 @@ class VLLMClient(UnifiedLLMClient):
         pt_retries: int | None = None,
         pct_retries: int | None = None,
         lss_retries: int | None = None,
+        pt_max_tokens: int | None = None,
+        pct_max_tokens: int | None = None,
+        lss_max_tokens: int | None = None,
         debug_single_path: bool | None = None,
     ) -> "VLLMClient":
         """Create a copy with runtime overrides while reusing transport."""
@@ -116,6 +119,12 @@ class VLLMClient(UnifiedLLMClient):
             runtime = replace(runtime, pct_retries=max(0, int(pct_retries)))
         if lss_retries is not None:
             runtime = replace(runtime, lss_retries=max(0, int(lss_retries)))
+        if pt_max_tokens is not None:
+            runtime = replace(runtime, pt_max_tokens=max(1, int(pt_max_tokens)))
+        if pct_max_tokens is not None:
+            runtime = replace(runtime, pct_max_tokens=max(1, int(pct_max_tokens)))
+        if lss_max_tokens is not None:
+            runtime = replace(runtime, lss_max_tokens=max(1, int(lss_max_tokens)))
         if debug_single_path is not None:
             runtime = replace(runtime, debug_single_path=bool(debug_single_path))
         return VLLMClient(runtime=runtime, transport=self._transport)

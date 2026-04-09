@@ -212,6 +212,28 @@ class TestRuntimePhase12(unittest.TestCase):
             cfg = VLLMRuntimeConfig.from_env()
         self.assertTrue(cfg.debug_single_path)
 
+    def test_vllm_with_overrides_updates_stage_retry_and_token_caps(self) -> None:
+        client = VLLMClient(runtime=VLLMRuntimeConfig())
+        overridden = client.with_overrides(
+            retries=0,
+            pt_retries=0,
+            pct_retries=0,
+            lss_retries=0,
+            pt_max_tokens=512,
+            pct_max_tokens=512,
+            lss_max_tokens=256,
+            debug_single_path=True,
+        )
+
+        self.assertEqual(overridden._runtime.retries, 0)
+        self.assertEqual(overridden._runtime.pt_retries, 0)
+        self.assertEqual(overridden._runtime.pct_retries, 0)
+        self.assertEqual(overridden._runtime.lss_retries, 0)
+        self.assertEqual(overridden._runtime.pt_max_tokens, 512)
+        self.assertEqual(overridden._runtime.pct_max_tokens, 512)
+        self.assertEqual(overridden._runtime.lss_max_tokens, 256)
+        self.assertTrue(overridden._runtime.debug_single_path)
+
     def test_duplicate_lss_action_is_rejected(self) -> None:
         state = create_initial_state("p", "proof")
         state.add_trace_step(
@@ -253,6 +275,47 @@ class TestRuntimePhase12(unittest.TestCase):
 
         self.assertEqual(proposer.propose(state, 0), [])
 
+    def test_semantic_duplicate_eliminate_action_is_rejected_even_with_new_title(self) -> None:
+        state = create_initial_state("p", "proof")
+        state.add_trace_step(
+            TraceStep(
+                action="eliminate",
+                rationale="prior step",
+                updates={
+                    "title": "eliminate_n",
+                    "added_facts": ["n is bounded"],
+                    "added_constraints": ["n <= 10"],
+                },
+            )
+        )
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "eliminate",
+                                "title": "rename_same_elimination",
+                                "added_facts": ["n is bounded"],
+                                "added_constraints": ["n <= 10"],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        self.assertEqual(proposer.propose(state, 0), [])
+
     def test_no_new_information_action_is_rejected(self) -> None:
         state = create_initial_state("p", "proof")
         state.derived_facts.append("n is bounded")
@@ -269,6 +332,37 @@ class TestRuntimePhase12(unittest.TestCase):
                                 "title": "repeat_known_info",
                                 "added_facts": ["n is bounded"],
                                 "added_constraints": ["perimeters are distinct"],
+                            }
+                        ]
+                    }
+                )
+
+        proposer = DomainAwareProposer(
+            client=_Client(),
+            plugins=[],
+            max_candidates=1,
+            cache_prefix="test",
+            allow_expensive_branching=False,
+            attempt_context=RunAttemptContext(),
+        )
+
+        self.assertEqual(proposer.propose(state, 0), [])
+
+    def test_equation_restatement_action_is_rejected(self) -> None:
+        state = create_initial_state("p", "proof")
+        state.current_equations.append("x + y = 10")
+
+        class _Client:
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "copy_equation_back",
+                                "added_facts": ["x + y = 10"],
+                                "added_constraints": ["x + y = 10"],
                             }
                         ]
                     }
@@ -418,6 +512,21 @@ class TestRuntimePhase12(unittest.TestCase):
         self.assertFalse(result.fallback_used)
         self.assertEqual(result.solve_mode, "balanced")
         self.assertEqual(result.fallback_reason, "")
+
+    def test_debug_single_path_prints_effective_debug_settings(self) -> None:
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            solve(
+                "custom unsolved",
+                config=SolveConfig(requested_mode="balanced", debug_single_path=True),
+                client=_NoActionClient(),
+            )
+
+        output = buffer.getvalue()
+        self.assertIn("debug_single_path enabled:", output)
+        self.assertIn("token_caps={pt:512,pct:512,lss:256}", output)
+        self.assertIn("beam_width=1", output)
+        self.assertIn("candidate_cap_per_state=1", output)
 
     def test_local_verifier_rejection_logs_title_type_and_reason(self) -> None:
         state = create_initial_state("Solve x + 1 = 2", "equation")
