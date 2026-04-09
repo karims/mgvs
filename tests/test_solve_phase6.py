@@ -109,6 +109,15 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertEqual(len(lss_calls), 1)
         self.assertNotEqual(result.termination_reason, "pct_answer_candidate_accepted")
 
+    def test_no_pct_answer_candidate_uses_normal_path(self) -> None:
+        result = solve("Solve x + 1 = 2", config=SolveConfig(target_type="equation"))
+
+        self.assertEqual(result.best_state.status, StateStatus.SOLVED)
+        self.assertNotIn("pct_answer_candidate_detected", result.policy_trace)
+        self.assertNotIn("pct_answer_candidate_accepted", result.policy_trace)
+        self.assertNotIn("pct_answer_candidate_rejected", result.policy_trace)
+        self.assertNotEqual(result.termination_reason, "pct_answer_candidate_accepted")
+
     def test_cli_solve_command_outputs_summary(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
