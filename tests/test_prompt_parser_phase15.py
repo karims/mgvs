@@ -106,6 +106,16 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed[0].added_constraints, ["x>=0"])
         self.assertEqual(parsed[0].rationale, "unspecified rationale")
 
+    def test_lss_missing_optional_fields_default_safely(self) -> None:
+        parsed = parse_lss_output(
+            json.dumps({"actions": [{"action_type": "rewrite", "title": "restate_constraint"}]})
+        )
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].added_facts, [])
+        self.assertEqual(parsed[0].added_constraints, [])
+        self.assertEqual(parsed[0].rationale, "unspecified rationale")
+
     def test_malformed_response_handling(self) -> None:
         payload = {
             "actions": [
@@ -165,13 +175,21 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(pct["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(pct["context"]["pt_target"], "solve x")
         self.assertEqual(pct["context"]["current_equations"], ["x+1=2"])
-        self.assertEqual(lss["constraints"]["max_candidates"], 2)
+        self.assertEqual(lss["constraints"]["max_candidates"], 1)
         self.assertEqual(lss["constraints"]["preferred_candidates"], 1)
         self.assertEqual(
             sorted(lss["output_schema"]["actions"][0].keys()),
             ["action_type", "added_constraints", "added_facts", "title"],
         )
-        self.assertEqual(len(lss["example_outputs"]), 2)
+        self.assertEqual(len(lss["example_outputs"]), 1)
+        self.assertIn(
+            "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Do not invent generic placeholder variables unless they already appear in the context.",
+            lss["instructions"],
+        )
         self.assertEqual(lss["context"]["pt_entities"], ["x"])
         self.assertEqual(lss["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(lss["context"]["pt_target"], "solve x")

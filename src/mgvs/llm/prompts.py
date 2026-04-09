@@ -145,7 +145,7 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "task": "local_step_synthesis",
         "context": context,
         "constraints": {
-            "max_candidates": min(2, max_candidates),
+            "max_candidates": 1 if max_candidates >= 1 else 1,
             "preferred_candidates": 1,
             "bounded_actions_only": True,
         },
@@ -163,37 +163,24 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             {
                 "actions": [
                     {
-                        "action_type": "rewrite",
-                        "title": "subtract_1",
-                        "added_facts": ["x = 1"],
-                        "added_constraints": [],
-                    }
-                ]
-            },
-            {
-                "actions": [
-                    {
                         "action_type": "derive_constraint",
-                        "title": "record_domain",
+                        "title": "record_unique_perimeter_requirement",
                         "added_facts": [],
-                        "added_constraints": ["x in R"],
-                    },
-                    {
-                        "action_type": "substitute",
-                        "title": "replace_y",
-                        "added_facts": ["x + 2 = 10"],
-                        "added_constraints": [],
+                        "added_constraints": ["distinct rectangles must have distinct perimeters"],
                     }
                 ]
-            },
+            }
         ],
         "instructions": [
             "Return JSON only.",
             "Do not include prose.",
             "Do not include markdown fences.",
-            "Emit at most 2 actions.",
+            "Emit at most 1 action.",
             "Prefer 1 action when possible.",
             "Use only the fields shown in output_schema.",
+            "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
+            "Do not invent generic placeholder variables unless they already appear in the context.",
+            "Do not copy toy algebra patterns that are unrelated to the current problem.",
         ],
     }
     return _json_block(contract)
@@ -211,5 +198,9 @@ def build_stage_system_prompt(stage: str) -> str:
     if stage == STAGE_PCT:
         return f"{base} Return only a tiny JSON object with strategy tags, open goals, candidate equations, and optional integer answer candidate."
     if stage == STAGE_LSS:
-        return f"{base} Return one or two tiny candidate actions only, using only action_type, title, added_facts, and added_constraints."
+        return (
+            f"{base} Return at most one tiny grounded candidate action, using only "
+            "action_type, title, added_facts, and added_constraints. "
+            "The action must reference the actual problem context rather than generic placeholder algebra."
+        )
     return base

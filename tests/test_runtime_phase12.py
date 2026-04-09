@@ -168,7 +168,7 @@ class TestRuntimePhase12(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         first_prompt = json.loads(calls[0]["messages"][1]["content"])  # type: ignore[index]
         second_prompt = json.loads(calls[1]["messages"][1]["content"])  # type: ignore[index]
-        self.assertEqual(first_prompt["constraints"]["max_candidates"], 2)
+        self.assertEqual(first_prompt["constraints"]["max_candidates"], 1)
         self.assertEqual(second_prompt["constraints"]["max_candidates"], 1)
         self.assertIn("actions", json.loads(raw))
 
