@@ -181,6 +181,12 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
             "Do not invent generic placeholder variables unless they already appear in the context.",
             "Do not copy toy algebra patterns that are unrelated to the current problem.",
+            "Do not repeat already-known equations or constraints.",
+            "Do not restate target-only facts such as the final modulus target without adding new information.",
+            "Do not propose actions that merely restate current equations.",
+            "Do not propose empty eliminations with no downstream consequence.",
+            "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
+            'If no materially advancing action is available, return {"actions": []}.',
         ],
     }
     return _json_block(contract)

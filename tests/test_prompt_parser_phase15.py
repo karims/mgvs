@@ -190,6 +190,18 @@ class TestPromptParserPhase15(unittest.TestCase):
             "Do not invent generic placeholder variables unless they already appear in the context.",
             lss["instructions"],
         )
+        self.assertIn("Do not repeat already-known equations or constraints.", lss["instructions"])
+        self.assertIn(
+            "Do not restate target-only facts such as the final modulus target without adding new information.",
+            lss["instructions"],
+        )
+        self.assertIn("Do not propose actions that merely restate current equations.", lss["instructions"])
+        self.assertIn("Do not propose empty eliminations with no downstream consequence.", lss["instructions"])
+        self.assertIn(
+            "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
+            lss["instructions"],
+        )
+        self.assertIn('If no materially advancing action is available, return {"actions": []}.', lss["instructions"])
         self.assertEqual(lss["context"]["pt_entities"], ["x"])
         self.assertEqual(lss["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(lss["context"]["pt_target"], "solve x")
