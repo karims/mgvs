@@ -170,12 +170,24 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             {
                 "actions": [
                     {
-                        "action_type": "derive_constraint",
-                        "title": "record_unique_perimeter_requirement",
-                        "added_facts": [],
-                        "added_constraints": ["distinct rectangles must have distinct perimeters"],
+                        "action_type": "substitute",
+                        "title": "derive_shifted_sum_relation",
+                        "added_facts": ["a + s_a = b + s_b + 10"],
+                        "added_constraints": [],
                     }
                 ]
+            },
+            {
+                "label": "bad_example_do_not_copy",
+                "actions": [
+                    {
+                        "action_type": "eliminate",
+                        "title": "eliminate variable",
+                        "added_facts": ["a + b = c"],
+                        "added_constraints": [],
+                    }
+                ],
+                "reason": "does not introduce new information",
             }
         ],
         "instructions": [
@@ -188,11 +200,18 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
             "Do not invent generic placeholder variables unless they already appear in the context.",
             "Do not copy toy algebra patterns that are unrelated to the current problem.",
+            "Do not output high-level tactics like eliminate variable or simplify without showing the result.",
+            "Every action must introduce NEW information not already present in current_equations.",
+            "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
+            "Do not copy or restate existing equations into added_facts or added_constraints.",
+            "Prefer explicit derived equations such as simplified equations, substituted expressions, reduced forms, or new equalities between variables.",
             "Do not repeat already-known equations or constraints.",
             "Do not restate target-only facts such as the final modulus target without adding new information.",
             "Do not propose actions that merely restate current equations.",
             "Do not propose empty eliminations with no downstream consequence.",
             "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
+            "Bad example reason: an eliminate action that only repeats an existing relation does not count as progress.",
+            "Good example pattern: substitute or eliminate only when the transformed result is written explicitly in added_facts.",
             'If no materially advancing action is available, return {"actions": []}.',
         ],
     }

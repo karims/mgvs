@@ -252,13 +252,39 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(lss["output_schema"]["actions"][0].keys()),
             ["action_type", "added_constraints", "added_facts", "title"],
         )
-        self.assertEqual(len(lss["example_outputs"]), 1)
+        self.assertEqual(len(lss["example_outputs"]), 2)
+        self.assertEqual(lss["example_outputs"][0]["actions"][0]["action_type"], "substitute")
+        self.assertEqual(
+            lss["example_outputs"][0]["actions"][0]["added_facts"],
+            ["a + s_a = b + s_b + 10"],
+        )
+        self.assertEqual(lss["example_outputs"][1]["label"], "bad_example_do_not_copy")
         self.assertIn(
             "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
             lss["instructions"],
         )
         self.assertIn(
             "Do not invent generic placeholder variables unless they already appear in the context.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Do not output high-level tactics like eliminate variable or simplify without showing the result.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Every action must introduce NEW information not already present in current_equations.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Do not copy or restate existing equations into added_facts or added_constraints.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Prefer explicit derived equations such as simplified equations, substituted expressions, reduced forms, or new equalities between variables.",
             lss["instructions"],
         )
         self.assertIn("Do not repeat already-known equations or constraints.", lss["instructions"])
