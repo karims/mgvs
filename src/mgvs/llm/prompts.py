@@ -293,19 +293,30 @@ def build_endgame_solve_prompt(
             "confidence": "high|medium|low",
             "justification": ["short bullet"],
         },
-        "example_output": {
-            "answer": 42,
-            "confidence": "medium",
-            "justification": [
-                "Use the reduced constraints and current equations.",
-                "Do not restart from scratch if the state already narrows the answer.",
-            ],
-        },
+        "example_outputs": [
+            {
+                "answer": 42,
+                "confidence": "medium",
+                "justification": [
+                    "Use the reduced constraints and current equations.",
+                    "Do not restart from scratch if the state already narrows the answer.",
+                ],
+            },
+            {
+                "answer": None,
+                "confidence": "low",
+                "justification": ["The reduced state does not yet determine a unique integer."],
+            },
+        ],
         "instructions": [
             "Return JSON only.",
             "Do not include markdown fences.",
             "Do not include prose before or after the JSON object.",
             "Use the reduced state as the primary input.",
+            'If the reduced state is insufficient to determine a unique integer answer, return {"answer": null, ...}.',
+            "Do not guess.",
+            "Do not output a confident integer answer from vague qualitative bounds alone.",
+            "Only return a numeric answer when the equations and facts are sufficient to justify it.",
             "Do not restart the whole problem from scratch unless necessary.",
             "Set answer to an integer or null.",
             "Set confidence to exactly one of: high, medium, low.",

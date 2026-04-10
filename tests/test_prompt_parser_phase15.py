@@ -360,10 +360,30 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(endgame["output_schema"].keys()),
             ["answer", "confidence", "justification"],
         )
+        self.assertEqual(len(endgame["example_outputs"]), 2)
+        self.assertIsNone(endgame["example_outputs"][1]["answer"])
+        self.assertEqual(endgame["example_outputs"][1]["confidence"], "low")
+        self.assertEqual(
+            endgame["example_outputs"][1]["justification"],
+            ["The reduced state does not yet determine a unique integer."],
+        )
         self.assertEqual(endgame["context"]["pt_target"], "solve x")
         self.assertEqual(endgame["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(endgame["context"]["trace_summary"], ["rewrite: subtract 1"])
         self.assertIn("Use the reduced state as the primary input.", endgame["instructions"])
+        self.assertIn(
+            'If the reduced state is insufficient to determine a unique integer answer, return {"answer": null, ...}.',
+            endgame["instructions"],
+        )
+        self.assertIn("Do not guess.", endgame["instructions"])
+        self.assertIn(
+            "Do not output a confident integer answer from vague qualitative bounds alone.",
+            endgame["instructions"],
+        )
+        self.assertIn(
+            "Only return a numeric answer when the equations and facts are sufficient to justify it.",
+            endgame["instructions"],
+        )
         self.assertIn(
             "Do not restart the whole problem from scratch unless necessary.",
             endgame["instructions"],
