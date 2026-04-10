@@ -60,8 +60,15 @@ class LSSClient(Protocol):
         """Return structured LSS output text for the given prompt."""
 
 
-class UnifiedLLMClient(PTClient, PCTClient, LSSClient, Protocol):
-    """Unified client exposing all PT/PCT/LSS stage methods."""
+class EndgameClient(Protocol):
+    """Endgame reduced-state solve stage client interface."""
+
+    def generate_endgame(self, prompt: str) -> str:
+        """Return structured endgame output text for the given prompt."""
+
+
+class UnifiedLLMClient(PTClient, PCTClient, LSSClient, EndgameClient, Protocol):
+    """Unified client exposing all PT/PCT/LSS/endgame stage methods."""
 
 
 class PTService(Protocol):

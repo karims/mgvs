@@ -178,6 +178,7 @@ class VLLMRuntimeConfig:
     pt_max_tokens: int = 512
     pct_max_tokens: int = 512
     lss_max_tokens: int = 256
+    endgame_max_tokens: int = 256
     timeout: float = 30.0
     retries: int = 1
     pt_retries: int = 2
@@ -199,6 +200,7 @@ class VLLMRuntimeConfig:
             pt_max_tokens=int(os.getenv("MGVS_VLLM_PT_MAX_TOKENS", "512")),
             pct_max_tokens=int(os.getenv("MGVS_VLLM_PCT_MAX_TOKENS", "512")),
             lss_max_tokens=int(os.getenv("MGVS_VLLM_LSS_MAX_TOKENS", "256")),
+            endgame_max_tokens=int(os.getenv("MGVS_VLLM_ENDGAME_MAX_TOKENS", "256")),
             timeout=float(os.getenv("MGVS_VLLM_TIMEOUT", "30.0")),
             retries=int(os.getenv("MGVS_VLLM_RETRIES", "1")),
             pt_retries=int(os.getenv("MGVS_VLLM_PT_RETRIES", "2")),

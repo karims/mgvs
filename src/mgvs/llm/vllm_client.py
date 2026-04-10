@@ -12,7 +12,7 @@ from urllib import error, request
 from mgvs.config import VLLMRuntimeConfig
 from mgvs.llm.base import LLMRequestOptions, UnifiedLLMClient
 from mgvs.llm.parser import parse_structured_json_object
-from mgvs.llm.prompts import STAGE_LSS, STAGE_PCT, STAGE_PT, build_stage_system_prompt
+from mgvs.llm.prompts import STAGE_ENDGAME, STAGE_LSS, STAGE_PCT, STAGE_PT, build_stage_system_prompt
 
 Transport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
 
@@ -106,6 +106,7 @@ class VLLMClient(UnifiedLLMClient):
         pt_max_tokens: int | None = None,
         pct_max_tokens: int | None = None,
         lss_max_tokens: int | None = None,
+        endgame_max_tokens: int | None = None,
         debug_single_path: bool | None = None,
     ) -> "VLLMClient":
         """Create a copy with runtime overrides while reusing transport."""
@@ -125,6 +126,8 @@ class VLLMClient(UnifiedLLMClient):
             runtime = replace(runtime, pct_max_tokens=max(1, int(pct_max_tokens)))
         if lss_max_tokens is not None:
             runtime = replace(runtime, lss_max_tokens=max(1, int(lss_max_tokens)))
+        if endgame_max_tokens is not None:
+            runtime = replace(runtime, endgame_max_tokens=max(1, int(endgame_max_tokens)))
         if debug_single_path is not None:
             runtime = replace(runtime, debug_single_path=bool(debug_single_path))
         return VLLMClient(runtime=runtime, transport=self._transport)
@@ -143,6 +146,11 @@ class VLLMClient(UnifiedLLMClient):
         """Generate structured LSS output."""
 
         return self._generate(stage=STAGE_LSS, prompt=prompt)
+
+    def generate_endgame(self, prompt: str) -> str:
+        """Generate structured endgame solve output."""
+
+        return self._generate(stage=STAGE_ENDGAME, prompt=prompt)
 
     def _generate(self, *, stage: str, prompt: str) -> str:
         """Issue one structured stage request with robust fallbacks."""
@@ -352,6 +360,8 @@ class VLLMClient(UnifiedLLMClient):
             return max(1, int(self._runtime.pct_max_tokens))
         if stage == STAGE_LSS:
             return max(1, int(self._runtime.lss_max_tokens))
+        if stage == STAGE_ENDGAME:
+            return max(1, int(self._runtime.endgame_max_tokens))
         return max(1, int(self._runtime.max_tokens))
 
     def _stage_retry_cap(self, stage: str) -> int:
@@ -408,6 +418,15 @@ class VLLMClient(UnifiedLLMClient):
                 "open_goals": [],
                 "added_facts": [],
                 "added_constraints": [],
+                "metadata": {"fallback_reason": reason},
+            }
+            return json.dumps(payload, sort_keys=True)
+
+        if stage == STAGE_ENDGAME:
+            payload = {
+                "answer": None,
+                "confidence": "low",
+                "justification": [],
                 "metadata": {"fallback_reason": reason},
             }
             return json.dumps(payload, sort_keys=True)

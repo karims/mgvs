@@ -5,7 +5,14 @@ import unittest
 from unittest.mock import patch
 
 from mgvs.config import VLLMRuntimeConfig
-from mgvs.llm.parser import parse_lss_output, parse_pct_output, parse_pt_output, parse_structured_json_object
+from mgvs.llm.parser import (
+    parse_endgame_solve_output,
+    parse_lss_output,
+    parse_pct_output,
+    parse_pt_output,
+    parse_structured_json_object,
+)
+from mgvs.llm.prompts import build_endgame_solve_prompt
 from mgvs.llm.vllm_client import VLLMClient
 
 
@@ -126,6 +133,47 @@ class TestVLLMClientPhase7(unittest.TestCase):
         self.assertIn("x", parsed.symbolic_objects)
         self.assertIn("x+1=2", parsed.domain_constraints)
 
+    def test_generate_endgame_success(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, headers, timeout
+            self.assertEqual(payload["max_tokens"], 384)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "answer": 50,
+                                    "confidence": "high",
+                                    "justification": ["Reduced state isolates a unique count."],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        prompt = build_endgame_solve_prompt(
+            raw_problem="Find K.",
+            pt_target="find K",
+            pt_constraints=["distinct perimeters"],
+            current_equations=["K <= 998"],
+            derived_facts=["K is uniquely determined"],
+            open_goals=["confirm final count"],
+            strategy_tags=["counting"],
+            trace_summary=["derive bound"],
+        )
+        client = VLLMClient(
+            runtime=VLLMRuntimeConfig(model_name="stub", endgame_max_tokens=384),
+            transport=transport,
+        )
+        output = client.generate_endgame(prompt)
+        parsed = parse_endgame_solve_output(output)
+
+        self.assertEqual(parsed.answer, 50)
+        self.assertEqual(parsed.confidence, "high")
+        self.assertEqual(parsed.justification, ["Reduced state isolates a unique count."])
+
     def test_partial_json_recovery_from_wrapped_content(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout
@@ -184,6 +232,19 @@ class TestVLLMClientPhase7(unittest.TestCase):
 
         self.assertEqual(parsed.strategy_tags, ["llm_fallback"])
 
+    def test_endgame_timeout_fallback(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            raise TimeoutError("timeout")
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_endgame("prompt")
+        parsed = parse_endgame_solve_output(output)
+
+        self.assertIsNone(parsed.answer)
+        self.assertEqual(parsed.confidence, "low")
+        self.assertEqual(parsed.justification, [])
+
     def test_malformed_response_shape_fallback(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout
@@ -207,6 +268,7 @@ class TestVLLMClientPhase7(unittest.TestCase):
                 "MGVS_VLLM_PT_MAX_TOKENS": "640",
                 "MGVS_VLLM_PCT_MAX_TOKENS": "320",
                 "MGVS_VLLM_LSS_MAX_TOKENS": "192",
+                "MGVS_VLLM_ENDGAME_MAX_TOKENS": "384",
                 "MGVS_VLLM_TIMEOUT": "11",
                 "MGVS_VLLM_PT_RETRIES": "2",
                 "MGVS_VLLM_PCT_RETRIES": "2",
@@ -224,10 +286,16 @@ class TestVLLMClientPhase7(unittest.TestCase):
         self.assertEqual(cfg.pt_max_tokens, 640)
         self.assertEqual(cfg.pct_max_tokens, 320)
         self.assertEqual(cfg.lss_max_tokens, 192)
+        self.assertEqual(cfg.endgame_max_tokens, 384)
         self.assertEqual(cfg.timeout, 11.0)
         self.assertEqual(cfg.pt_retries, 2)
         self.assertEqual(cfg.pct_retries, 2)
         self.assertEqual(cfg.lss_retries, 2)
+
+    def test_with_overrides_updates_endgame_token_cap(self) -> None:
+        client = VLLMClient(runtime=VLLMRuntimeConfig())
+        overridden = client.with_overrides(endgame_max_tokens=384)
+        self.assertEqual(overridden._runtime.endgame_max_tokens, 384)
 
     def test_parser_recovery_helper(self) -> None:
         wrapped = "prefix {\"actions\":[{\"action_type\":\"rewrite\"}]} suffix"

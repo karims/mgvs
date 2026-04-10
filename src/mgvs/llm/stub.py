@@ -1,4 +1,4 @@
-"""Deterministic PT/PCT/LSS stub backend for offline integration tests."""
+"""Deterministic PT/PCT/LSS/endgame stub backend for offline integration tests."""
 
 from __future__ import annotations
 
@@ -305,6 +305,16 @@ class StubLLMClient(UnifiedLLMClient):
                         "metadata": {"normalized_form": "placeholder"},
                     }
                 ]
+            }
+        )
+
+    def generate_endgame(self, prompt: str) -> str:
+        _ = prompt
+        return json.dumps(
+            {
+                "answer": None,
+                "confidence": "low",
+                "justification": [],
             }
         )
 
