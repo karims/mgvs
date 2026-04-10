@@ -274,13 +274,23 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(lss["output_schema"]["actions"][0].keys()),
             ["action_type", "added_constraints", "added_facts", "title"],
         )
-        self.assertEqual(len(lss["example_outputs"]), 2)
+        self.assertEqual(len(lss["example_outputs"]), 5)
         self.assertEqual(lss["example_outputs"][0]["actions"][0]["action_type"], "substitute")
         self.assertEqual(
             lss["example_outputs"][0]["actions"][0]["added_facts"],
             ["a + s_a = b + s_b + 10"],
         )
-        self.assertEqual(lss["example_outputs"][1]["label"], "bad_example_do_not_copy")
+        self.assertEqual(
+            lss["example_outputs"][1]["actions"][0]["title"],
+            "derive_explicit_perimeter_count_bound",
+        )
+        self.assertEqual(
+            lss["example_outputs"][1]["actions"][0]["added_constraints"],
+            ["The number of distinct perimeters is at most 999."],
+        )
+        self.assertEqual(lss["example_outputs"][2]["label"], "bad_example_do_not_copy")
+        self.assertEqual(lss["example_outputs"][3]["label"], "bad_example_copying_current_equation")
+        self.assertEqual(lss["example_outputs"][4]["label"], "bad_example_vague_bound")
         self.assertIn(
             "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
             lss["instructions"],
@@ -298,7 +308,15 @@ class TestPromptParserPhase15(unittest.TestCase):
             lss["instructions"],
         )
         self.assertIn(
+            "Every accepted action must introduce at least one concrete new fact or new constraint.",
+            lss["instructions"],
+        )
+        self.assertIn(
             "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Do not output vague constraints like the number is limited by the range unless the range or bound is made explicit.",
             lss["instructions"],
         )
         self.assertIn(
@@ -318,6 +336,18 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertIn("Do not propose empty eliminations with no downstream consequence.", lss["instructions"])
         self.assertIn(
             "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Bad example reason: copying current equations is not a concrete reduction.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Bad example reason: eliminate one variable without the resulting equation is not enough.",
+            lss["instructions"],
+        )
+        self.assertIn(
+            "Bad example reason: limited by the range is too vague unless the actual bound is stated.",
             lss["instructions"],
         )
         self.assertIn('If no materially advancing action is available, return {"actions": []}.', lss["instructions"])
