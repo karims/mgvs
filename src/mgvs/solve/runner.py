@@ -14,15 +14,22 @@ from mgvs.domains import active_domain_plugins
 from mgvs.domains.base import DomainPlugin
 from mgvs.llm.base import UnifiedLLMClient
 from mgvs.llm.parser import (
+    EndgameSolveOutput,
     PCTUpdate,
     apply_pct_update,
+    parse_endgame_solve_output,
     apply_pt_update,
     parse_lss_output,
     parse_pct_output,
     parse_pt_output,
     parse_structured_json_object,
 )
-from mgvs.llm.prompts import build_lss_prompt, build_pct_prompt, build_pt_prompt
+from mgvs.llm.prompts import (
+    build_endgame_solve_prompt,
+    build_lss_prompt,
+    build_pct_prompt,
+    build_pt_prompt,
+)
 from mgvs.llm.stub import StubLLMClient
 from mgvs.llm.vllm_client import VLLMClient
 from mgvs.search.controller import (
@@ -723,12 +730,29 @@ def _run_attempt(
     )
 
     best_state, answer_decision = _select_best_terminal(controller_result)
+    trace_summary = _summarize_trace(best_state)
+    endgame_output = _maybe_run_endgame_stage(
+        client=active_client,
+        state=best_state,
+        predicted_answer=answer_decision.predicted_answer,
+        trace_summary=trace_summary,
+        policy_trace=policy_trace,
+    )
+    if endgame_output.answer is not None:
+        answer_decision = BeamAnswerDecision(
+            predicted_answer=endgame_output.answer,
+            answer_status="predicted",
+            supporting_state_ids=list(answer_decision.supporting_state_ids),
+            supporting_trace_count=answer_decision.supporting_trace_count,
+        )
+        trace_summary = trace_summary + [f"endgame_answer_found: answer={endgame_output.answer}"]
+
     policy_trace.append(f"malformed_outputs={attempt_context.malformed_output_count}")
     if attempt_context.llm_fallback_reasons:
         policy_trace.append(f"llm_fallback_reasons={','.join(attempt_context.llm_fallback_reasons)}")
     return SolveResult(
         best_state=best_state,
-        trace_summary=_summarize_trace(best_state),
+        trace_summary=trace_summary,
         termination_reason=controller_result.termination_reason,
         depth_reached=controller_result.depth_reached,
         predicted_answer=answer_decision.predicted_answer,
@@ -813,6 +837,53 @@ def _select_best_terminal(controller_result: ControllerResult) -> tuple[Reasonin
     if solved:
         return max(solved, key=lambda state: state.score), decision
     return max(candidates, key=lambda state: state.score), decision
+
+
+def _maybe_run_endgame_stage(
+    *,
+    client: UnifiedLLMClient,
+    state: ReasoningState,
+    predicted_answer: int | None,
+    trace_summary: list[str],
+    policy_trace: list[str],
+) -> EndgameSolveOutput:
+    """Run a single endgame solve pass from reduced state when trigger conditions are met."""
+
+    if predicted_answer is not None:
+        return EndgameSolveOutput()
+    if not state.accepted_steps:
+        return EndgameSolveOutput()
+    if not state.current_equations and not state.derived_facts:
+        return EndgameSolveOutput()
+
+    generate_endgame = getattr(client, "generate_endgame", None)
+    if not callable(generate_endgame):
+        return EndgameSolveOutput()
+
+    policy_trace.append("endgame_called")
+    prompt = build_endgame_solve_prompt(
+        raw_problem=state.raw_problem,
+        pt_target=state.open_goals[0] if state.open_goals else "",
+        pt_constraints=list(state.domain_constraints) + list(state.global_constraints),
+        current_equations=list(state.current_equations),
+        derived_facts=list(state.derived_facts),
+        open_goals=list(state.open_goals),
+        strategy_tags=list(state.strategy_tags),
+        trace_summary=list(trace_summary),
+    )
+    if _debug_runtime_enabled():
+        prompt_obj = parse_structured_json_object(prompt)
+        _debug_runtime_print(
+            f"[runner][endgame] prompt_context={json.dumps(prompt_obj.get('context', {}), sort_keys=True)}"
+        )
+    raw = generate_endgame(prompt)
+    _debug_runtime_print(f"[runner][endgame] raw_preview={raw[:240]!r}")
+    output = parse_endgame_solve_output(raw)
+    if output.answer is not None:
+        policy_trace.append("endgame_answer_found")
+    else:
+        policy_trace.append("endgame_no_answer")
+    return output
 
 
 def _run_pt_with_cache(

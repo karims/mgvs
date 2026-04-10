@@ -118,6 +118,113 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertNotIn("pct_answer_candidate_rejected", result.policy_trace)
         self.assertNotEqual(result.termination_reason, "pct_answer_candidate_accepted")
 
+    def test_endgame_can_set_predicted_answer_after_lss(self) -> None:
+        class EndgameAnswerClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "entities": ["K"],
+                        "target": "find K",
+                        "constraints": ["distinct rectangles have distinct perimeters"],
+                    }
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["counting"],
+                        "open_goals": ["derive a final count"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "record_count_bound",
+                                "added_facts": ["the perimeter count is tightly bounded"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+            def generate_endgame(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "answer": 50,
+                        "confidence": "high",
+                        "justification": ["Reduced state supports a unique final count."],
+                    }
+                )
+
+        result = solve("Endgame answer demo", config=SolveConfig(), client=EndgameAnswerClient())
+
+        self.assertEqual(result.predicted_answer, 50)
+        self.assertEqual(result.answer_status, "predicted")
+        self.assertIn("endgame_called", result.policy_trace)
+        self.assertIn("endgame_answer_found", result.policy_trace)
+        self.assertTrue(any("endgame_answer_found" in line for line in result.trace_summary))
+
+    def test_endgame_null_answer_keeps_existing_flow(self) -> None:
+        class EndgameNoAnswerClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "entities": ["K"],
+                        "target": "find K",
+                        "constraints": ["distinct rectangles have distinct perimeters"],
+                    }
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["counting"],
+                        "open_goals": ["derive a final count"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "record_count_bound",
+                                "added_facts": ["the perimeter count is tightly bounded"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+            def generate_endgame(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+
+        result = solve("Endgame no answer demo", config=SolveConfig(), client=EndgameNoAnswerClient())
+
+        self.assertIsNone(result.predicted_answer)
+        self.assertIn("endgame_called", result.policy_trace)
+        self.assertIn("endgame_no_answer", result.policy_trace)
+        self.assertNotIn("endgame_answer_found", result.policy_trace)
+
     def test_cli_solve_command_outputs_summary(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
