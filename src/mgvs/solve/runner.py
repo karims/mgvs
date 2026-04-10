@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field, replace
 
@@ -867,6 +868,190 @@ def _select_best_terminal(controller_result: ControllerResult) -> tuple[Reasonin
     return max(candidates, key=lambda state: state.score), decision
 
 
+def is_endgame_ready(state: ReasoningState) -> bool:
+    """Return whether the state is strong enough for endgame/final solve calls."""
+
+    ready, _ = _endgame_readiness(state)
+    return ready
+
+
+def _endgame_readiness(state: ReasoningState) -> tuple[bool, list[str]]:
+    """Evaluate endgame readiness and return blocking reasons when not ready."""
+
+    reasons: list[str] = []
+    if not state.accepted_steps:
+        reasons.append("accepted_steps_empty")
+        return False, reasons
+
+    if _last_step_is_weak_restatement(state):
+        reasons.append("last_step_weak_restatement")
+
+    has_derived_equation = _has_derived_equation_beyond_translations(state)
+    has_concrete_fact = _has_concrete_algebraic_or_numeric_fact(state)
+    has_multi_step_progress = _has_multi_step_progress(state)
+    counting_bound_required = _looks_like_counting_or_bound_problem(state)
+    has_explicit_numeric_bound = _has_explicit_numeric_bound(state)
+    only_vague_constraints = _has_only_vague_constraints(state)
+
+    if counting_bound_required and not has_explicit_numeric_bound:
+        reasons.append("missing_explicit_numeric_bound")
+    if only_vague_constraints and not (has_derived_equation or has_concrete_fact or has_multi_step_progress):
+        reasons.append("only_vague_qualitative_constraints")
+    if not any([has_derived_equation, has_concrete_fact, has_multi_step_progress, has_explicit_numeric_bound]):
+        reasons.append("no_concrete_reduction")
+
+    return not reasons, reasons
+
+
+def _has_derived_equation_beyond_translations(state: ReasoningState) -> bool:
+    """Check for equation-like state that goes beyond direct PT constraint translations."""
+
+    direct_relations = {
+        str(item).strip()
+        for item in list(state.domain_constraints) + list(state.global_constraints)
+        if str(item).strip()
+    }
+    for equation in state.current_equations:
+        text = str(equation).strip()
+        if not _looks_equation_like_text(text):
+            continue
+        if text not in direct_relations:
+            return True
+    return False
+
+
+def _has_concrete_algebraic_or_numeric_fact(state: ReasoningState) -> bool:
+    """Check whether derived facts include concrete algebraic or numeric consequences."""
+
+    return any(_is_concrete_relation_text(str(fact).strip()) for fact in state.derived_facts if str(fact).strip())
+
+
+def _has_multi_step_progress(state: ReasoningState) -> bool:
+    """Require at least two accepted steps and one explicit derived relation or numeric bound."""
+
+    if len(state.accepted_steps) < 2:
+        return False
+    for step in state.accepted_steps:
+        added_facts = step.updates.get("added_facts", [])
+        added_constraints = step.updates.get("added_constraints", [])
+        values = []
+        if isinstance(added_facts, list):
+            values.extend(str(item).strip() for item in added_facts if str(item).strip())
+        if isinstance(added_constraints, list):
+            values.extend(str(item).strip() for item in added_constraints if str(item).strip())
+        if any(_is_concrete_relation_text(value) or _contains_explicit_numeric_bound(value) for value in values):
+            return True
+    return False
+
+
+def _has_explicit_numeric_bound(state: ReasoningState) -> bool:
+    """Detect explicit numeric bounds in facts, constraints, or equations."""
+
+    texts = (
+        list(state.derived_facts)
+        + list(state.domain_constraints)
+        + list(state.global_constraints)
+        + list(state.current_equations)
+    )
+    return any(_contains_explicit_numeric_bound(str(text).strip()) for text in texts if str(text).strip())
+
+
+def _has_only_vague_constraints(state: ReasoningState) -> bool:
+    """Detect states whose known relations are only vague qualitative statements."""
+
+    texts = (
+        list(state.derived_facts)
+        + list(state.domain_constraints)
+        + list(state.global_constraints)
+        + list(state.current_equations)
+    )
+    nonempty = [str(text).strip() for text in texts if str(text).strip()]
+    if not nonempty:
+        return True
+    return all(_is_vague_qualitative_text(text) for text in nonempty)
+
+
+def _last_step_is_weak_restatement(state: ReasoningState) -> bool:
+    """Check whether the latest accepted step only added weak qualitative restatement."""
+
+    if not state.accepted_steps:
+        return False
+    step = state.accepted_steps[-1]
+    values: list[str] = []
+    added_facts = step.updates.get("added_facts", [])
+    added_constraints = step.updates.get("added_constraints", [])
+    if isinstance(added_facts, list):
+        values.extend(str(item).strip() for item in added_facts if str(item).strip())
+    if isinstance(added_constraints, list):
+        values.extend(str(item).strip() for item in added_constraints if str(item).strip())
+    if not values:
+        return True
+    return all(_is_vague_qualitative_text(value) for value in values)
+
+
+def _looks_like_counting_or_bound_problem(state: ReasoningState) -> bool:
+    """Heuristic detector for counting/bound style problems."""
+
+    haystacks = [
+        state.raw_problem.lower(),
+        " ".join(str(item).lower() for item in state.open_goals),
+        " ".join(str(item).lower() for item in state.strategy_tags),
+    ]
+    keywords = ("count", "number", "maximum", "minimum", "bound", "perimeter", "distinct", "range")
+    return any(any(keyword in haystack for keyword in keywords) for haystack in haystacks)
+
+
+def _looks_equation_like_text(text: str) -> bool:
+    """Detect equation-like text with an explicit relation operator."""
+
+    return any(token in text for token in ("=", "<=", ">=", "<", ">"))
+
+
+def _contains_explicit_numeric_bound(text: str) -> bool:
+    """Detect explicit numeric upper/lower bounds and ranges."""
+
+    lowered = text.lower()
+    if not re.search(r"\d", lowered):
+        return False
+    bound_terms = ("at most", "at least", "less than", "greater than", "range from", "<=", ">=", "<", ">", "between")
+    if any(term in lowered for term in bound_terms):
+        return True
+    return False
+
+
+def _is_concrete_relation_text(text: str) -> bool:
+    """Detect concrete relation text usable for endgame reasoning."""
+
+    lowered = text.lower()
+    if _looks_equation_like_text(text):
+        return True
+    if _contains_explicit_numeric_bound(text):
+        return True
+    concrete_terms = ("even", "odd", "divisible", "multiple", "mod", "residue")
+    return any(term in lowered for term in concrete_terms) and bool(re.search(r"\d", lowered))
+
+
+def _is_vague_qualitative_text(text: str) -> bool:
+    """Detect weak qualitative restatements that should not trigger endgame."""
+
+    lowered = text.lower()
+    if _is_concrete_relation_text(text):
+        return False
+    vague_terms = (
+        "bounded",
+        "limited by the range",
+        "limited",
+        "range",
+        "qualitative",
+        "roughly",
+        "tightly bounded",
+        "can be analyzed",
+        "useful",
+        "may help",
+    )
+    return any(term in lowered for term in vague_terms) or not _looks_equation_like_text(text)
+
+
 def _maybe_run_endgame_stage(
     *,
     client: UnifiedLLMClient,
@@ -878,10 +1063,13 @@ def _maybe_run_endgame_stage(
     """Run a single endgame solve pass from reduced state when trigger conditions are met."""
 
     if predicted_answer is not None:
+        _debug_runtime_print("[runner][endgame] endgame_ready=false reasons=predicted_answer_already_present")
         return EndgameSolveOutput()
-    if not state.accepted_steps:
-        return EndgameSolveOutput()
-    if not state.current_equations and not state.derived_facts:
+    ready, reasons = _endgame_readiness(state)
+    _debug_runtime_print(
+        f"[runner][endgame] endgame_ready={'true' if ready else 'false'} reasons={','.join(reasons) if reasons else 'ready'}"
+    )
+    if not ready:
         return EndgameSolveOutput()
 
     generate_endgame = getattr(client, "generate_endgame", None)
@@ -924,6 +1112,14 @@ def _maybe_run_final_llm_solve(
     """Run one final direct-answer LLM solve from reduced state when available."""
 
     if predicted_answer is not None:
+        _debug_runtime_print("[runner][final_llm] endgame_ready=false reasons=predicted_answer_already_present")
+        return None
+
+    ready, reasons = _endgame_readiness(state)
+    _debug_runtime_print(
+        f"[runner][final_llm] endgame_ready={'true' if ready else 'false'} reasons={','.join(reasons) if reasons else 'ready'}"
+    )
+    if not ready:
         return None
 
     prompt = json.dumps(

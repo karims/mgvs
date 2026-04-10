@@ -149,9 +149,9 @@ class TestSolvePhase6(unittest.TestCase):
                         "actions": [
                             {
                                 "action_type": "derive_constraint",
-                                "title": "record_count_bound",
-                                "added_facts": ["the perimeter count is tightly bounded"],
-                                "added_constraints": [],
+                                "title": "derive_explicit_perimeter_count_bound",
+                                "added_facts": ["Possible rectangle perimeters range from 4 to 2000 and are even."],
+                                "added_constraints": ["The number of distinct perimeters is at most 999."],
                                 "metadata": {"mark_solved": True},
                             }
                         ]
@@ -208,9 +208,9 @@ class TestSolvePhase6(unittest.TestCase):
                         "actions": [
                             {
                                 "action_type": "derive_constraint",
-                                "title": "record_count_bound",
-                                "added_facts": ["the perimeter count is tightly bounded"],
-                                "added_constraints": [],
+                                "title": "derive_explicit_perimeter_count_bound",
+                                "added_facts": ["Possible rectangle perimeters range from 4 to 2000 and are even."],
+                                "added_constraints": ["The number of distinct perimeters is at most 999."],
                                 "metadata": {"mark_solved": True},
                             }
                         ]
@@ -260,9 +260,9 @@ class TestSolvePhase6(unittest.TestCase):
                         "actions": [
                             {
                                 "action_type": "derive_constraint",
-                                "title": "record_count_bound",
-                                "added_facts": ["the perimeter count is tightly bounded"],
-                                "added_constraints": [],
+                                "title": "derive_explicit_perimeter_count_bound",
+                                "added_facts": ["Possible rectangle perimeters range from 4 to 2000 and are even."],
+                                "added_constraints": ["The number of distinct perimeters is at most 999."],
                                 "metadata": {"mark_solved": True},
                             }
                         ]
@@ -316,9 +316,9 @@ class TestSolvePhase6(unittest.TestCase):
                         "actions": [
                             {
                                 "action_type": "derive_constraint",
-                                "title": "record_count_bound",
-                                "added_facts": ["the perimeter count is tightly bounded"],
-                                "added_constraints": [],
+                                "title": "derive_explicit_perimeter_count_bound",
+                                "added_facts": ["Possible rectangle perimeters range from 4 to 2000 and are even."],
+                                "added_constraints": ["The number of distinct perimeters is at most 999."],
                                 "metadata": {"mark_solved": True},
                             }
                         ]
@@ -341,6 +341,68 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertIn("final_llm_called", result.policy_trace)
         self.assertIn("final_llm_no_answer", result.policy_trace)
         self.assertNotIn("final_llm_answer_found", result.policy_trace)
+
+    def test_endgame_is_blocked_for_weak_qualitative_state(self) -> None:
+        class WeakStateClient(UnifiedLLMClient):
+            def __init__(self) -> None:
+                self.endgame_calls = 0
+                self.final_calls = 0
+
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "entities": ["K"],
+                        "target": "find K",
+                        "constraints": ["distinct rectangles have distinct perimeters"],
+                    }
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["counting"],
+                        "open_goals": ["derive a final count"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "weak_bound_statement",
+                                "added_facts": ["the perimeter count is tightly bounded"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+            def generate_endgame(self, prompt: str) -> str:
+                self.endgame_calls += 1
+                _ = prompt
+                return json.dumps({"answer": 50, "confidence": "high", "justification": []})
+
+            def generate(self, prompt: str, system_prompt: str = "") -> str:
+                self.final_calls += 1
+                _ = prompt, system_prompt
+                return json.dumps({"answer": 50})
+
+        client = WeakStateClient()
+        result = solve("Weak endgame gate demo", config=SolveConfig(), client=client)
+
+        self.assertEqual(client.endgame_calls, 0)
+        self.assertEqual(client.final_calls, 0)
+        self.assertIsNone(result.predicted_answer)
+        self.assertNotIn("endgame_called", result.policy_trace)
+        self.assertNotIn("final_llm_called", result.policy_trace)
 
     def test_cli_output_includes_answer_source(self) -> None:
         buffer = io.StringIO()
