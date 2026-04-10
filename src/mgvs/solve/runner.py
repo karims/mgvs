@@ -99,6 +99,7 @@ class SolveResult:
     depth_reached: int
     predicted_answer: int | None = None
     answer_status: str = "missing_answer"
+    answer_source: str = ""
     supporting_state_ids: list[str] = field(default_factory=list)
     supporting_trace_count: int = 0
     solve_mode: str = "balanced"
@@ -604,6 +605,7 @@ def format_solve_result(result: SolveResult) -> str:
         f"termination: {result.termination_reason}",
         f"depth reached: {result.depth_reached}",
         f"answer status: {result.answer_status}",
+        f"answer source: {result.answer_source or 'NA'}",
         f"predicted answer: {result.predicted_answer if result.predicted_answer is not None else 'NA'}",
         "derived facts:",
     ]
@@ -698,6 +700,7 @@ def _run_attempt(
             depth_reached=0,
             predicted_answer=decision.predicted_answer,
             answer_status=decision.answer_status,
+            answer_source=_answer_source_from_status(decision.answer_status, decision.predicted_answer),
             supporting_state_ids=list(decision.supporting_state_ids),
             supporting_trace_count=decision.supporting_trace_count,
             solve_mode=mode_selection.mode.value,
@@ -745,6 +748,7 @@ def _run_attempt(
             supporting_state_ids=list(answer_decision.supporting_state_ids),
             supporting_trace_count=answer_decision.supporting_trace_count,
         )
+        policy_trace.append("answer_source=endgame_llm")
         trace_summary = trace_summary + [f"endgame_answer_found: answer={endgame_output.answer}"]
 
     policy_trace.append(f"malformed_outputs={attempt_context.malformed_output_count}")
@@ -757,6 +761,11 @@ def _run_attempt(
         depth_reached=controller_result.depth_reached,
         predicted_answer=answer_decision.predicted_answer,
         answer_status=answer_decision.answer_status,
+        answer_source=(
+            "endgame_llm"
+            if endgame_output.answer is not None
+            else _answer_source_from_status(answer_decision.answer_status, answer_decision.predicted_answer)
+        ),
         supporting_state_ids=list(answer_decision.supporting_state_ids),
         supporting_trace_count=answer_decision.supporting_trace_count,
         solve_mode=mode_selection.mode.value,
@@ -986,6 +995,7 @@ def _maybe_accept_pct_answer_candidate(
         depth_reached=0,
         predicted_answer=decision.predicted_answer,
         answer_status=decision.answer_status,
+        answer_source="pct_answer_candidate",
         supporting_state_ids=list(decision.supporting_state_ids),
         supporting_trace_count=decision.supporting_trace_count,
         solve_mode=solve_mode,
@@ -1090,6 +1100,7 @@ def _budget_exhausted_solve_result(*, raw_problem: str, target_type: str) -> Sol
         depth_reached=0,
         predicted_answer=decision.predicted_answer,
         answer_status=decision.answer_status,
+        answer_source=_answer_source_from_status(decision.answer_status, decision.predicted_answer),
         supporting_state_ids=list(decision.supporting_state_ids),
         supporting_trace_count=decision.supporting_trace_count,
         solve_mode="balanced",
@@ -1119,3 +1130,15 @@ def _summarize_trace(state: ReasoningState) -> list[str]:
             continue
         summaries.append(f"{step.action}: {step.rationale}{suffix}")
     return summaries
+
+
+def _answer_source_from_status(answer_status: str, predicted_answer: int | None) -> str:
+    """Map current answer resolution to a lightweight answer-source tag."""
+
+    if predicted_answer is None:
+        return ""
+    if answer_status in {"unique_integer", "consensus_integer"}:
+        return "beam_answering"
+    if answer_status == "predicted":
+        return "endgame_llm"
+    return ""

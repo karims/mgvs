@@ -63,6 +63,7 @@ class TestSolvePhase6(unittest.TestCase):
 
         self.assertEqual(result.best_state.status, StateStatus.SOLVED)
         self.assertEqual(result.predicted_answer, 50)
+        self.assertEqual(result.answer_source, "pct_answer_candidate")
         self.assertIn("pct_answer_candidate_detected", result.policy_trace)
         self.assertIn("pct_answer_candidate_accepted", result.policy_trace)
         self.assertTrue(any("pct_answer_candidate_accepted" in line for line in result.trace_summary))
@@ -171,8 +172,10 @@ class TestSolvePhase6(unittest.TestCase):
 
         self.assertEqual(result.predicted_answer, 50)
         self.assertEqual(result.answer_status, "predicted")
+        self.assertEqual(result.answer_source, "endgame_llm")
         self.assertIn("endgame_called", result.policy_trace)
         self.assertIn("endgame_answer_found", result.policy_trace)
+        self.assertIn("answer_source=endgame_llm", result.policy_trace)
         self.assertTrue(any("endgame_answer_found" in line for line in result.trace_summary))
 
     def test_endgame_null_answer_keeps_existing_flow(self) -> None:
@@ -221,9 +224,20 @@ class TestSolvePhase6(unittest.TestCase):
         result = solve("Endgame no answer demo", config=SolveConfig(), client=EndgameNoAnswerClient())
 
         self.assertIsNone(result.predicted_answer)
+        self.assertEqual(result.answer_status, "missing_answer")
+        self.assertEqual(result.answer_source, "")
         self.assertIn("endgame_called", result.policy_trace)
         self.assertIn("endgame_no_answer", result.policy_trace)
         self.assertNotIn("endgame_answer_found", result.policy_trace)
+
+    def test_cli_output_includes_answer_source(self) -> None:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(["solve", "--problem", "Solve x + 1 = 2"])
+
+        output = buffer.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("answer source:", output)
 
     def test_cli_solve_command_outputs_summary(self) -> None:
         buffer = io.StringIO()
