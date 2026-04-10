@@ -102,16 +102,16 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
         },
         "example_outputs": [
             {
-                "strategy_tags": ["counting", "bound"],
-                "open_goals": ["bound the maximum count", "use uniqueness constraint"],
-                "candidate_equations": [],
+                "strategy_tags": ["system_of_equations", "direct_translation"],
+                "open_goals": ["introduce variable definitions for unknown quantities", "decide which equation to use first"],
+                "candidate_equations": ["A + a = 2(B + b)", "A*a = 4(B*b)"],
                 "answer_candidate": None,
             },
             {
-                "strategy_tags": ["modular", "case_split"],
-                "open_goals": ["analyze residues mod n"],
-                "candidate_equations": ["a+b=n"],
-                "answer_candidate": 50,
+                "strategy_tags": ["variable_definition", "translation"],
+                "open_goals": ["if transfer variables are needed, define them explicitly before rewriting", "defer algebraic manipulation to later steps"],
+                "candidate_equations": ["total_red + moved_red = total_blue + moved_blue + 10"],
+                "answer_candidate": None,
             },
         ],
         "instructions": [
@@ -125,6 +125,11 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             "If tempted to explain, instead return shorter lists.",
             "Keep the object small and concise.",
             "Use only these top-level keys: strategy_tags, open_goals, candidate_equations, answer_candidate.",
+            "candidate_equations must be directly grounded in the problem statement or be simple variable-definition equations introduced explicitly.",
+            "Do not invent transformed equations such as shifted sums or shifted products unless they are explicitly stated in the problem.",
+            "Do not rewrite equations after hypothetical transfers unless the transfer variables are introduced explicitly and the transformed relation is exact.",
+            "Prefer direct statement equations first.",
+            "If a relation requires later manipulation, include it in open_goals, not candidate_equations.",
             "If no integer answer candidate is available, set answer_candidate to null.",
         ],
     }
