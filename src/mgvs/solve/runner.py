@@ -750,6 +750,21 @@ def _run_attempt(
         )
         policy_trace.append("answer_source=endgame_llm")
         trace_summary = trace_summary + [f"endgame_answer_found: answer={endgame_output.answer}"]
+    final_llm_answer = _maybe_run_final_llm_solve(
+        client=active_client,
+        state=best_state,
+        predicted_answer=answer_decision.predicted_answer,
+        policy_trace=policy_trace,
+    )
+    if final_llm_answer is not None:
+        answer_decision = BeamAnswerDecision(
+            predicted_answer=final_llm_answer,
+            answer_status="solved",
+            supporting_state_ids=list(answer_decision.supporting_state_ids),
+            supporting_trace_count=answer_decision.supporting_trace_count,
+        )
+        policy_trace.append("answer_source=final_llm")
+        trace_summary = trace_summary + [f"final_llm_answer_found: answer={final_llm_answer}"]
 
     policy_trace.append(f"malformed_outputs={attempt_context.malformed_output_count}")
     if attempt_context.llm_fallback_reasons:
@@ -762,9 +777,13 @@ def _run_attempt(
         predicted_answer=answer_decision.predicted_answer,
         answer_status=answer_decision.answer_status,
         answer_source=(
-            "endgame_llm"
-            if endgame_output.answer is not None
-            else _answer_source_from_status(answer_decision.answer_status, answer_decision.predicted_answer)
+            "final_llm"
+            if final_llm_answer is not None
+            else (
+                "endgame_llm"
+                if endgame_output.answer is not None
+                else _answer_source_from_status(answer_decision.answer_status, answer_decision.predicted_answer)
+            )
         ),
         supporting_state_ids=list(answer_decision.supporting_state_ids),
         supporting_trace_count=answer_decision.supporting_trace_count,
@@ -893,6 +912,64 @@ def _maybe_run_endgame_stage(
     else:
         policy_trace.append("endgame_no_answer")
     return output
+
+
+def _maybe_run_final_llm_solve(
+    *,
+    client: UnifiedLLMClient,
+    state: ReasoningState,
+    predicted_answer: int | None,
+    policy_trace: list[str],
+) -> int | None:
+    """Run one final direct-answer LLM solve from reduced state when available."""
+
+    if predicted_answer is not None:
+        return None
+
+    prompt = json.dumps(
+        {
+            "task": "solve_final",
+            "context": {
+                "raw_problem": state.raw_problem,
+                "equations": list(state.current_equations),
+                "facts": list(state.derived_facts),
+                "constraints": list(state.domain_constraints),
+            },
+            "instructions": [
+                "Solve the problem using the provided equations and facts.",
+                "Return ONLY JSON.",
+                "Do not include explanations.",
+                'Output format: {"answer": integer}',
+            ],
+        },
+        sort_keys=True,
+    )
+
+    raw = ""
+    generate = getattr(client, "generate", None)
+    if callable(generate):
+        policy_trace.append("final_llm_called")
+        raw = generate(
+            prompt,
+            system_prompt="You are a math solver. Return only a JSON object with a single integer answer.",
+        )
+    else:
+        generate_endgame = getattr(client, "generate_endgame", None)
+        if not callable(generate_endgame):
+            return None
+        policy_trace.append("final_llm_called")
+        raw = generate_endgame(prompt)
+
+    if not isinstance(raw, str) or not raw:
+        policy_trace.append("final_llm_no_answer")
+        return None
+    _debug_runtime_print(f"[runner][final_llm] raw_preview={raw[:240]!r}")
+    output = parse_endgame_solve_output(raw)
+    if output.answer is None:
+        policy_trace.append("final_llm_no_answer")
+        return None
+    policy_trace.append("final_llm_answer_found")
+    return output.answer
 
 
 def _run_pt_with_cache(

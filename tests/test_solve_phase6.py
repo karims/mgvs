@@ -230,6 +230,118 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertIn("endgame_no_answer", result.policy_trace)
         self.assertNotIn("endgame_answer_found", result.policy_trace)
 
+    def test_final_llm_can_set_answer_after_lss(self) -> None:
+        class FinalLLMAnswerClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "entities": ["K"],
+                        "target": "find K",
+                        "constraints": ["distinct rectangles have distinct perimeters"],
+                    }
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["counting"],
+                        "open_goals": ["derive a final count"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "record_count_bound",
+                                "added_facts": ["the perimeter count is tightly bounded"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+            def generate_endgame(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+
+            def generate(self, prompt: str, system_prompt: str = "") -> str:
+                _ = prompt, system_prompt
+                return json.dumps({"answer": 73})
+
+        result = solve("Final LLM answer demo", config=SolveConfig(), client=FinalLLMAnswerClient())
+
+        self.assertEqual(result.predicted_answer, 73)
+        self.assertEqual(result.answer_status, "solved")
+        self.assertEqual(result.answer_source, "final_llm")
+        self.assertIn("final_llm_called", result.policy_trace)
+        self.assertIn("final_llm_answer_found", result.policy_trace)
+        self.assertIn("answer_source=final_llm", result.policy_trace)
+
+    def test_final_llm_parse_failure_keeps_existing_behavior(self) -> None:
+        class FinalLLMParseFailClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "entities": ["K"],
+                        "target": "find K",
+                        "constraints": ["distinct rectangles have distinct perimeters"],
+                    }
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["counting"],
+                        "open_goals": ["derive a final count"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "actions": [
+                            {
+                                "action_type": "derive_constraint",
+                                "title": "record_count_bound",
+                                "added_facts": ["the perimeter count is tightly bounded"],
+                                "added_constraints": [],
+                                "metadata": {"mark_solved": True},
+                            }
+                        ]
+                    }
+                )
+
+            def generate_endgame(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+
+            def generate(self, prompt: str, system_prompt: str = "") -> str:
+                _ = prompt, system_prompt
+                return "not json"
+
+        result = solve("Final LLM parse fail demo", config=SolveConfig(), client=FinalLLMParseFailClient())
+
+        self.assertIsNone(result.predicted_answer)
+        self.assertEqual(result.answer_status, "missing_answer")
+        self.assertEqual(result.answer_source, "")
+        self.assertIn("final_llm_called", result.policy_trace)
+        self.assertIn("final_llm_no_answer", result.policy_trace)
+        self.assertNotIn("final_llm_answer_found", result.policy_trace)
+
     def test_cli_output_includes_answer_source(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
