@@ -48,6 +48,15 @@ class PCTUpdate:
     answer_candidate: int | None = None
 
 
+@dataclass(frozen=True)
+class EndgameSolveOutput:
+    """Parsed endgame stage answer payload."""
+
+    answer: int | None = None
+    confidence: str = "low"
+    justification: list[str] = field(default_factory=list)
+
+
 def parse_structured_json_object(text: str) -> dict[str, Any]:
     """Parse JSON object with best-effort recovery from mixed model text."""
 
@@ -312,6 +321,20 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         for index, action in enumerate(parsed):
             print(f"  action[{index}] =", action)
     return parsed
+
+
+def parse_endgame_solve_output(text: str) -> EndgameSolveOutput:
+    """Parse endgame JSON output into a compact answer payload."""
+
+    obj = _load_json_object(text)
+    confidence = str(obj.get("confidence", "low") or "low").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+    return EndgameSolveOutput(
+        answer=_int_or_none(obj.get("answer")),
+        confidence=confidence,
+        justification=_string_list(obj.get("justification")),
+    )
 
 
 def parse_action(text: str) -> CandidateAction:

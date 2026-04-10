@@ -4,8 +4,18 @@ import json
 import unittest
 
 from mgvs.actions.models import ActionType
-from mgvs.llm.parser import parse_lss_output, parse_pct_output, parse_pt_output
-from mgvs.llm.prompts import build_lss_prompt, build_pct_prompt, build_pt_prompt
+from mgvs.llm.parser import (
+    parse_endgame_solve_output,
+    parse_lss_output,
+    parse_pct_output,
+    parse_pt_output,
+)
+from mgvs.llm.prompts import (
+    build_endgame_solve_prompt,
+    build_lss_prompt,
+    build_pct_prompt,
+    build_pt_prompt,
+)
 from mgvs.state.models import create_initial_state
 
 
@@ -148,6 +158,54 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed[0].title, "a")
         self.assertEqual(parsed[1].title, "b")
 
+    def test_endgame_valid_json_answer(self) -> None:
+        parsed = parse_endgame_solve_output(
+            json.dumps(
+                {
+                    "answer": 84,
+                    "confidence": "high",
+                    "justification": ["Reduced state forces a unique count."],
+                }
+            )
+        )
+
+        self.assertEqual(parsed.answer, 84)
+        self.assertEqual(parsed.confidence, "high")
+        self.assertEqual(parsed.justification, ["Reduced state forces a unique count."])
+
+    def test_endgame_null_answer(self) -> None:
+        parsed = parse_endgame_solve_output(
+            json.dumps({"answer": None, "confidence": "medium", "justification": []})
+        )
+
+        self.assertIsNone(parsed.answer)
+        self.assertEqual(parsed.confidence, "medium")
+        self.assertEqual(parsed.justification, [])
+
+    def test_endgame_defaults_missing_confidence_and_justification(self) -> None:
+        parsed = parse_endgame_solve_output(json.dumps({"answer": 17}))
+
+        self.assertEqual(parsed.answer, 17)
+        self.assertEqual(parsed.confidence, "low")
+        self.assertEqual(parsed.justification, [])
+
+    def test_endgame_ignores_extra_keys(self) -> None:
+        parsed = parse_endgame_solve_output(
+            json.dumps(
+                {
+                    "answer": "91",
+                    "confidence": "high",
+                    "justification": ["Use the reduced bound."],
+                    "essay": "ignore this",
+                    "scratchwork": ["ignore this too"],
+                }
+            )
+        )
+
+        self.assertEqual(parsed.answer, 91)
+        self.assertEqual(parsed.confidence, "high")
+        self.assertEqual(parsed.justification, ["Use the reduced bound."])
+
     def test_prompts_are_compact_structured_contracts(self) -> None:
         state = create_initial_state("Solve x+1=2", "equation")
         state.symbolic_objects["x"] = {"kind": "entity"}
@@ -159,10 +217,23 @@ class TestPromptParserPhase15(unittest.TestCase):
         pt = json.loads(build_pt_prompt(state.raw_problem, state.target_type))
         pct = json.loads(build_pct_prompt(state, max_tactics=3))
         lss = json.loads(build_lss_prompt(state, max_candidates=2))
+        endgame = json.loads(
+            build_endgame_solve_prompt(
+                raw_problem=state.raw_problem,
+                pt_target="solve x",
+                pt_constraints=["x+1=2"],
+                current_equations=["x+1=2"],
+                derived_facts=["x is scalar"],
+                open_goals=["solve x"],
+                strategy_tags=["isolate_variable"],
+                trace_summary=["rewrite: subtract 1"],
+            )
+        )
 
         self.assertEqual(pt["contract"], "pt_v2")
         self.assertEqual(pct["contract"], "pct_v2")
         self.assertEqual(lss["contract"], "lss_v2")
+        self.assertEqual(endgame["contract"], "endgame_v1")
         self.assertEqual(pct["constraints"]["max_tactics"], 3)
         self.assertEqual(
             sorted(pct["output_schema"].keys()),
@@ -207,6 +278,19 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(lss["context"]["pt_target"], "solve x")
         self.assertEqual(lss["context"]["strategy_tags"], ["isolate_variable"])
         self.assertEqual(lss["context"]["derived_facts"], ["x is scalar"])
+        self.assertEqual(
+            sorted(endgame["output_schema"].keys()),
+            ["answer", "confidence", "justification"],
+        )
+        self.assertEqual(endgame["context"]["pt_target"], "solve x")
+        self.assertEqual(endgame["context"]["pt_constraints"], ["x+1=2"])
+        self.assertEqual(endgame["context"]["trace_summary"], ["rewrite: subtract 1"])
+        self.assertIn("Use the reduced state as the primary input.", endgame["instructions"])
+        self.assertIn(
+            "Do not restart the whole problem from scratch unless necessary.",
+            endgame["instructions"],
+        )
+        self.assertIn("Return 1 to 3 short justification strings at most.", endgame["instructions"])
 
 
 if __name__ == "__main__":

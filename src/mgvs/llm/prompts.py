@@ -1,15 +1,22 @@
-"""Prompt builders for PT, PCT, and LSS structured-output stages."""
+"""Prompt builders for PT, PCT, LSS, and endgame structured-output stages."""
 
 from __future__ import annotations
 
 import json
 
-from mgvs.llm.base import DEFAULT_PCT_MAX_TACTICS, LSSContractVersion, PCTContractVersion, PTContractVersion
+from mgvs.llm.base import (
+    DEFAULT_PCT_MAX_TACTICS,
+    ENDGAMEContractVersion,
+    LSSContractVersion,
+    PCTContractVersion,
+    PTContractVersion,
+)
 from mgvs.state.models import ReasoningState
 
 STAGE_PT = "pt"
 STAGE_PCT = "pct"
 STAGE_LSS = "lss"
+STAGE_ENDGAME = "endgame"
 
 
 def _json_block(payload: dict[str, object]) -> str:
@@ -192,6 +199,60 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
     return _json_block(contract)
 
 
+def build_endgame_solve_prompt(
+    *,
+    raw_problem: str,
+    pt_target: str,
+    pt_constraints: list[str],
+    current_equations: list[str],
+    derived_facts: list[str],
+    open_goals: list[str],
+    strategy_tags: list[str],
+    trace_summary: list[str] | None = None,
+) -> str:
+    """Build endgame prompt contract for solving from a reduced structured state."""
+
+    contract = {
+        "contract": ENDGAMEContractVersion,
+        "task": "endgame_solve_from_reduced_state",
+        "context": {
+            "raw_problem": raw_problem,
+            "pt_target": pt_target,
+            "pt_constraints": list(pt_constraints),
+            "current_equations": list(current_equations),
+            "derived_facts": list(derived_facts),
+            "open_goals": list(open_goals),
+            "strategy_tags": list(strategy_tags),
+            "trace_summary": list(trace_summary or []),
+        },
+        "output_schema": {
+            "answer": None,
+            "confidence": "high|medium|low",
+            "justification": ["short bullet"],
+        },
+        "example_output": {
+            "answer": 42,
+            "confidence": "medium",
+            "justification": [
+                "Use the reduced constraints and current equations.",
+                "Do not restart from scratch if the state already narrows the answer.",
+            ],
+        },
+        "instructions": [
+            "Return JSON only.",
+            "Do not include markdown fences.",
+            "Do not include prose before or after the JSON object.",
+            "Use the reduced state as the primary input.",
+            "Do not restart the whole problem from scratch unless necessary.",
+            "Set answer to an integer or null.",
+            "Set confidence to exactly one of: high, medium, low.",
+            "Keep justification extremely short.",
+            "Return 1 to 3 short justification strings at most.",
+        ],
+    }
+    return _json_block(contract)
+
+
 def build_stage_system_prompt(stage: str) -> str:
     """Return stage-specific system instruction for structured generation."""
 
@@ -208,5 +269,10 @@ def build_stage_system_prompt(stage: str) -> str:
             f"{base} Return at most one tiny grounded candidate action, using only "
             "action_type, title, added_facts, and added_constraints. "
             "The action must reference the actual problem context rather than generic placeholder algebra."
+        )
+    if stage == STAGE_ENDGAME:
+        return (
+            f"{base} Return only a tiny endgame JSON object with answer, confidence, "
+            "and very short justification strings based on the reduced state."
         )
     return base

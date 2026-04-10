@@ -1,4 +1,4 @@
-"""Base interfaces for PT/PCT/LSS LLM-backed planning stages."""
+"""Base interfaces for PT/PCT/LSS and endgame LLM-backed planning stages."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ from mgvs.state.models import ReasoningState
 if TYPE_CHECKING:
     from mgvs.actions.models import CandidateAction
 
-LLMStage = Literal["pt", "pct", "lss"]
+LLMStage = Literal["pt", "pct", "lss", "endgame"]
 PTContractVersion = "pt_v2"
 PCTContractVersion = "pct_v2"
 LSSContractVersion = "lss_v2"
+ENDGAMEContractVersion = "endgame_v1"
 DEFAULT_PCT_MAX_TACTICS = 4
 
 
