@@ -67,6 +67,7 @@ class SolveConfig:
     requested_mode: str = "auto"
     policy_config: SolvePolicyConfig = field(default_factory=SolvePolicyConfig.default)
     debug_single_path: bool = False
+    experiment_state_first: bool = False
 
     @classmethod
     def from_env(cls, *, target_type: str = "unspecified") -> "SolveConfig":
@@ -84,6 +85,8 @@ class SolveConfig:
             requested_mode="auto",
             policy_config=SolvePolicyConfig.from_env(),
             debug_single_path=os.getenv("MGVS_DEBUG_SINGLE_PATH", "0").strip().lower() in {"1", "true", "yes", "on"},
+            experiment_state_first=os.getenv("MGVS_EXPERIMENT_STATE_FIRST", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
 
 
@@ -492,6 +495,7 @@ class SequentialLSSResult:
     termination_reason: str
     depth_reached: int
     iteration_summaries: list[IterationSummary]
+    log_events: list[str] = field(default_factory=list)
 
 
 def _progress_vector(state: ReasoningState) -> dict[str, float]:
@@ -699,6 +703,7 @@ def _run_sequential_lss_loop(
     proposer: DomainAwareProposer,
     verifier: TrackingCompositeVerifier,
     transition_budget: int,
+    experiment_mode: bool = False,
 ) -> SequentialLSSResult:
     """Run a fixed-budget sequential PT->PCT->LSS transition loop.
 
@@ -712,7 +717,10 @@ def _run_sequential_lss_loop(
     current = initial_state
     canonicalizer = DefaultStateCanonicalizer()
     summaries: list[IterationSummary] = []
+    log_events: list[str] = []
     depth = 0
+    weak_transition_streak = 0
+    salvage_used = False
 
     while depth < transition_budget:
         if is_terminal_state(current):
@@ -721,16 +729,25 @@ def _run_sequential_lss_loop(
                 termination_reason=_terminal_reason_for_state(current),
                 depth_reached=depth,
                 iteration_summaries=summaries,
+                log_events=log_events,
             )
 
         candidates = proposer.propose(current, depth)
         merged_state: ReasoningState | None = None
         accepted_actions = 0
         candidate_count = len(candidates)
+        accepted_score = 0.0
+        accepted_components: dict[str, float] = {}
+        accepted_unknowns_before = len(current.unknowns_remaining)
+        accepted_unknowns_after = accepted_unknowns_before
 
         for action in candidates:
+            log_events.append(f"lss.action_type={action.action_type.value}")
             if not verifier.is_action_valid(current, action):
                 rejection = verifier.consume_last_action_rejection() or {}
+                log_events.append(
+                    f"validator.reject action={action.action_type.value} reason={rejection.get('reason', 'unknown')}"
+                )
                 _debug_runtime_print(
                     "[runner][lss] reject "
                     f"layer={rejection.get('layer', 'local_verifier_reject')} "
@@ -740,6 +757,8 @@ def _run_sequential_lss_loop(
                 salvage_patch = rejection.get("details", {}).get("salvage_patch") if isinstance(
                     rejection.get("details"), dict
                 ) else None
+                if experiment_mode and salvage_used:
+                    continue
                 salvage_action = _candidate_from_salvage_patch(salvage_patch)
                 if salvage_action is None:
                     continue
@@ -749,11 +768,15 @@ def _run_sequential_lss_loop(
                         f"action_type={salvage_action.action_type.value}"
                     )
                     continue
+                salvage_used = True
+                log_events.append(f"validator.salvage_accept action={salvage_action.action_type.value}")
                 _debug_runtime_print(
                     f"[runner][lss] salvage_patch_accept title={salvage_action.title!r} "
                     f"action_type={salvage_action.action_type.value}"
                 )
                 action = salvage_action
+            else:
+                log_events.append(f"validator.accept action={action.action_type.value}")
 
             children = apply_action(current, action)
             valid_children: list[ReasoningState] = []
@@ -778,6 +801,8 @@ def _run_sequential_lss_loop(
             )
             merged_state = valid_children[0]
             accepted_actions = 1
+            accepted_score, accepted_components = _progress_delta(current, merged_state)
+            accepted_unknowns_after = len(merged_state.unknowns_remaining)
             break
 
         summaries.append(
@@ -793,12 +818,16 @@ def _run_sequential_lss_loop(
         if merged_state is None:
             return SequentialLSSResult(
                 final_state=current,
-                termination_reason="no_valid_next_states",
+                termination_reason="no_useful_transition" if experiment_mode else "no_valid_next_states",
                 depth_reached=depth + 1,
                 iteration_summaries=summaries,
+                log_events=log_events + ["stop_reason=no_useful_transition"],
             )
 
-        progress_delta, progress_components = _progress_delta(current, merged_state)
+        progress_delta, progress_components = accepted_score, accepted_components
+        log_events.append(
+            f"validator.accept_score={progress_delta:.2f} unknowns_remaining:{accepted_unknowns_before}->{accepted_unknowns_after}"
+        )
         _debug_runtime_print(
             f"[runner][lss] progress depth={depth} delta={progress_delta:.2f} components={progress_components}"
         )
@@ -811,21 +840,34 @@ def _run_sequential_lss_loop(
                 termination_reason=_terminal_reason_for_state(current),
                 depth_reached=depth,
                 iteration_summaries=summaries,
+                log_events=log_events,
             )
 
         if progress_delta <= 0:
+            weak_transition_streak += 1
+            if experiment_mode and weak_transition_streak >= 2:
+                return SequentialLSSResult(
+                    final_state=current,
+                    termination_reason="repeated_weak_transitions",
+                    depth_reached=depth,
+                    iteration_summaries=summaries,
+                    log_events=log_events + ["stop_reason=repeated_weak_transitions"],
+                )
             return SequentialLSSResult(
                 final_state=current,
                 termination_reason="no_useful_progress",
                 depth_reached=depth,
                 iteration_summaries=summaries,
+                log_events=log_events + ["stop_reason=no_useful_progress"],
             )
+        weak_transition_streak = 0
 
     return SequentialLSSResult(
         final_state=current,
         termination_reason="transition_budget_reached",
         depth_reached=depth,
         iteration_summaries=summaries,
+        log_events=log_events + ["stop_reason=transition_budget_reached"],
     )
 
 
@@ -848,6 +890,11 @@ def solve(
             "debug_single_path enabled: "
             "retries={pt:0,pct:0,lss:0}, token_caps={pt:512,pct:512,lss:256}, "
             "beam_width=1, transition_budget=1, candidate_cap_per_state=1, fallback_disabled=true"
+        )
+    if cfg.experiment_state_first:
+        print(
+            "experiment_state_first enabled: "
+            "pt=1, pct=1, lss<=3, validator=per_step, endgame=1, fallback_disabled=true"
         )
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
@@ -880,6 +927,8 @@ def solve(
         and fallback.reason == "no_valid_branches_survived"
         and pressure < cfg.policy_config.budget_pressure_fallback_threshold
     ):
+        return primary
+    if cfg.experiment_state_first:
         return primary
     if cfg.debug_single_path:
         return primary
@@ -965,6 +1014,12 @@ def _run_attempt(
     if mode_settings.use_pt:
         state = _run_pt_with_cache(state, active_client, cache_prefix=cache_prefix, attempt_context=attempt_context)
         policy_trace.append("stage:pt=used")
+        if cfg.experiment_state_first:
+            policy_trace.append(
+                "pt_quality="
+                f"objects:{len(state.objects)} relations:{len(state.relations)} constraints:{len(state.constraints)} "
+                f"unknowns:{len(state.unknowns_remaining)}"
+            )
     else:
         policy_trace.append("stage:pt=skipped")
 
@@ -976,6 +1031,12 @@ def _run_attempt(
             attempt_context=attempt_context,
         )
         policy_trace.append("stage:pct=used")
+        if cfg.experiment_state_first:
+            policy_trace.append(
+                "pct_additions="
+                f"tags:{len(pct_update.strategy_tags)} goals:{len(pct_update.open_goals)} "
+                f"equations:{len(pct_update.candidate_equations)} answer_candidate:{pct_update.answer_candidate}"
+            )
         pct_handoff = _maybe_accept_pct_answer_candidate(
             state=state,
             pct_update=pct_update,
@@ -1028,14 +1089,23 @@ def _run_attempt(
     tracking_verifier = TrackingCompositeVerifier(build_default_verifier(), domain_plugins=plugins)
     transition_budget = 1 if cfg.debug_single_path else max(
         1,
-        min(cfg.lss_transition_budget, cfg.max_depth, mode_settings.max_depth),
+        min(
+            3 if cfg.experiment_state_first else cfg.lss_transition_budget,
+            cfg.max_depth,
+            mode_settings.max_depth,
+        ),
     )
     lss_result = _run_sequential_lss_loop(
         initial_state=state,
         proposer=proposer,
         verifier=tracking_verifier,
         transition_budget=transition_budget,
+        experiment_mode=cfg.experiment_state_first,
     )
+    if cfg.experiment_state_first:
+        policy_trace.extend([f"lss.{event}" for event in lss_result.log_events])
+        if attempt_context.malformed_output_count > 0 and lss_result.depth_reached <= 1:
+            policy_trace.append("stop_reason=parsing_failure")
 
     best_state = lss_result.final_state
     answer_decision = select_answer_across_states([best_state])
@@ -1047,6 +1117,14 @@ def _run_attempt(
         trace_summary=trace_summary,
         policy_trace=policy_trace,
     )
+    if cfg.experiment_state_first:
+        endgame_ready, _ = _endgame_readiness(best_state)
+        readiness_score = 1.0 if endgame_ready else 0.0
+        policy_trace.append(
+            f"endgame.readiness_score={readiness_score:.2f} final_answer={endgame_output.answer if endgame_output.answer is not None else 'NA'}"
+        )
+        if not endgame_ready:
+            policy_trace.append("stop_reason=endgame_not_ready")
     if endgame_output.answer is not None:
         answer_decision = BeamAnswerDecision(
             predicted_answer=endgame_output.answer,

@@ -489,6 +489,51 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertIn("final status: solved", output)
         self.assertIn("accepted trace:", output)
 
+    def test_experiment_state_first_mode_emits_stage_summaries(self) -> None:
+        class _NoActionClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"objects": ["x"], "relations": ["x+1=2"], "constraints": ["x+1=2"], "goal": "solve x"})
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "strategy_tags": ["normalize_equations"],
+                        "open_goals": ["isolate x"],
+                        "candidate_equations": [],
+                        "answer_candidate": None,
+                    }
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps({"actions": []})
+
+            def generate_endgame(self, prompt: str) -> str:
+                _ = prompt
+                return json.dumps(
+                    {
+                        "ready": False,
+                        "answer": None,
+                        "confidence": "low",
+                        "justification": [],
+                        "missing_requirements": ["Need one concrete reduction step."],
+                    }
+                )
+
+        result = solve(
+            "Experiment mode demo",
+            config=SolveConfig(experiment_state_first=True),
+            client=_NoActionClient(),
+        )
+
+        self.assertFalse(result.fallback_used)
+        self.assertTrue(any(item.startswith("pt_quality=") for item in result.policy_trace))
+        self.assertTrue(any(item.startswith("pct_additions=") for item in result.policy_trace))
+        self.assertTrue(any(item.startswith("lss.stop_reason=") for item in result.policy_trace))
+        self.assertTrue(any(item.startswith("endgame.readiness_score=") for item in result.policy_trace))
+
 
 if __name__ == "__main__":
     unittest.main()

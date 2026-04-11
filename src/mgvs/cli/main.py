@@ -23,6 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     solve_parser.add_argument("--max-depth", type=int, default=4, help="Search max depth")
     solve_parser.add_argument("--beam-width", type=int, default=3, help="Beam width")
     solve_parser.add_argument("--max-candidates", type=int, default=3, help="LSS max candidates")
+    solve_parser.add_argument(
+        "--experiment-state-first",
+        action="store_true",
+        help="Run tiny sequential PT->PCT->LSS(validate/merge) loop with fixed small budget",
+    )
 
     eval_parser = subparsers.add_parser("eval", help="Run benchmark evaluation from local CSV")
     eval_parser.add_argument("--input", required=True, help="Path to benchmark CSV")
@@ -71,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_depth=args.max_depth,
                 beam_width=args.beam_width,
                 max_candidates=args.max_candidates,
+                experiment_state_first=bool(args.experiment_state_first),
             ),
             client=select_llm_client(args.backend),
         )
