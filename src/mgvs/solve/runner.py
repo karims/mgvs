@@ -9,7 +9,8 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 
-from mgvs.actions.models import CandidateAction
+from mgvs.actions.apply import apply_action
+from mgvs.actions.models import ActionType, CandidateAction
 from mgvs.config import RuntimeBudgetConfig, SolveModeSettings, SolvePolicyConfig
 from mgvs.domains import active_domain_plugins
 from mgvs.domains.base import DomainPlugin
@@ -33,14 +34,8 @@ from mgvs.llm.prompts import (
 )
 from mgvs.llm.stub import StubLLMClient
 from mgvs.llm.vllm_client import VLLMClient
-from mgvs.search.controller import (
-    ControllerConfig,
-    ControllerResult,
-    IterationSummary,
-    StateCanonicalizer,
-    run_search,
-)
-from mgvs.search.termination import terminal_states
+from mgvs.search.controller import ControllerResult, IterationSummary, StateCanonicalizer
+from mgvs.search.termination import is_terminal_state, terminal_states
 from mgvs.solve.answering import BeamAnswerDecision, select_answer_across_states
 from mgvs.solve.cache import StageCache
 from mgvs.solve.policy import (
@@ -64,6 +59,7 @@ class SolveConfig:
 
     target_type: str = "unspecified"
     max_depth: int = 4
+    lss_transition_budget: int = 3
     beam_width: int = 3
     max_candidates: int = 3
     max_wall_time_s: float = 20.0
@@ -80,6 +76,7 @@ class SolveConfig:
         return cls(
             target_type=target_type,
             max_depth=budget.max_depth,
+            lss_transition_budget=3,
             beam_width=budget.beam_width,
             max_candidates=budget.candidate_action_cap_per_state,
             max_wall_time_s=budget.per_problem_max_wall_time_s,
@@ -487,6 +484,104 @@ class RunAttemptContext:
     llm_fallback_reasons: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SequentialLSSResult:
+    """Outcome of the small-budget sequential LSS transition loop."""
+
+    final_state: ReasoningState
+    termination_reason: str
+    depth_reached: int
+    iteration_summaries: list[IterationSummary]
+
+
+def _progress_vector(state: ReasoningState) -> dict[str, float]:
+    """Compute compact progress signals for state-first sequential loop decisions."""
+
+    unknowns = float(len(state.unknowns_remaining))
+    bounds = float(len(state.bounds))
+    invariants = float(len(state.invariants))
+    cases = float(len(state.cases))
+    finite_reduction = 1.0 if any(
+        token in " ".join(state.candidate_strategies + state.strategy_tags).lower()
+        for token in ("finite_search", "reduce_to_finite_search")
+    ) else 0.0
+    candidate_count = float(len(state.answer_candidates))
+    return {
+        "unknowns": unknowns,
+        "bounds": bounds,
+        "invariants": invariants,
+        "cases": cases,
+        "finite_reduction": finite_reduction,
+        "answer_candidates": candidate_count,
+    }
+
+
+def _progress_delta(previous: ReasoningState, current: ReasoningState) -> tuple[float, dict[str, float]]:
+    """Score useful state progress using a few explicit, easy-to-audit criteria."""
+
+    before = _progress_vector(previous)
+    after = _progress_vector(current)
+    components = {
+        "unknowns_reduced": max(0.0, before["unknowns"] - after["unknowns"]) * 2.0,
+        "bounds_added": max(0.0, after["bounds"] - before["bounds"]) * 1.5,
+        "invariants_added": max(0.0, after["invariants"] - before["invariants"]) * 1.5,
+        "cases_added": max(0.0, after["cases"] - before["cases"]) * 1.0,
+        "finite_search_reduction": max(0.0, after["finite_reduction"] - before["finite_reduction"]) * 2.0,
+        "answer_set_reduced": max(0.0, before["answer_candidates"] - after["answer_candidates"]) * 2.0,
+    }
+    total = sum(components.values())
+    if current.status == StateStatus.SOLVED and previous.status != StateStatus.SOLVED:
+        components["solved_bonus"] = 3.0
+        total += 3.0
+    return total, components
+
+
+def _terminal_reason_for_state(state: ReasoningState) -> str:
+    """Map terminal states to stable termination reasons expected by policy/tests."""
+
+    if state.status == StateStatus.SOLVED:
+        tags = set(state.strategy_tags)
+        if "high_priority" in tags or "high_priority_solved" in tags or state.score >= 1.0:
+            return "high_priority_solved"
+    return "terminal_state_reached"
+
+
+def _candidate_from_salvage_patch(patch: object) -> CandidateAction | None:
+    """Best-effort conversion of optional validator salvage patch into CandidateAction."""
+
+    if not isinstance(patch, dict):
+        return None
+    action_type_raw = str(patch.get("action_type", "")).strip().lower()
+    title = str(patch.get("title", "")).strip()
+    if not action_type_raw or not title:
+        return None
+    try:
+        action_type = ActionType(action_type_raw)
+    except ValueError:
+        return None
+    return CandidateAction(
+        action_type=action_type,
+        title=title,
+        rationale=str(patch.get("rationale", "validator salvage patch")).strip() or "validator salvage patch",
+        added_facts=[str(item).strip() for item in patch.get("added_facts", []) if str(item).strip()]
+        if isinstance(patch.get("added_facts"), list)
+        else [],
+        added_constraints=[str(item).strip() for item in patch.get("added_constraints", []) if str(item).strip()]
+        if isinstance(patch.get("added_constraints"), list)
+        else [],
+        inputs=[str(item).strip() for item in patch.get("inputs", []) if str(item).strip()]
+        if isinstance(patch.get("inputs"), list)
+        else [],
+        outputs=[str(item).strip() for item in patch.get("outputs", []) if str(item).strip()]
+        if isinstance(patch.get("outputs"), list)
+        else [],
+        branch_labels=[str(item).strip() for item in patch.get("branch_labels", []) if str(item).strip()]
+        if isinstance(patch.get("branch_labels"), list)
+        else [],
+        metadata=dict(patch.get("metadata", {})) if isinstance(patch.get("metadata"), dict) else {},
+    )
+
+
 class DomainAwareProposer:
     """Wraps a proposer and applies domain plugin action enrichment."""
 
@@ -598,6 +693,142 @@ class DomainAwareProposer:
         return [action for _, action in scored]
 
 
+def _run_sequential_lss_loop(
+    *,
+    initial_state: ReasoningState,
+    proposer: DomainAwareProposer,
+    verifier: TrackingCompositeVerifier,
+    transition_budget: int,
+) -> SequentialLSSResult:
+    """Run a fixed-budget sequential PT->PCT->LSS transition loop.
+
+    Stop conditions:
+    - terminal state reached
+    - no valid/mergeable transition from current state
+    - accepted transition produced no useful progress
+    - transition budget exhausted
+    """
+
+    current = initial_state
+    canonicalizer = DefaultStateCanonicalizer()
+    summaries: list[IterationSummary] = []
+    depth = 0
+
+    while depth < transition_budget:
+        if is_terminal_state(current):
+            return SequentialLSSResult(
+                final_state=current,
+                termination_reason=_terminal_reason_for_state(current),
+                depth_reached=depth,
+                iteration_summaries=summaries,
+            )
+
+        candidates = proposer.propose(current, depth)
+        merged_state: ReasoningState | None = None
+        accepted_actions = 0
+        candidate_count = len(candidates)
+
+        for action in candidates:
+            if not verifier.is_action_valid(current, action):
+                rejection = verifier.consume_last_action_rejection() or {}
+                _debug_runtime_print(
+                    "[runner][lss] reject "
+                    f"layer={rejection.get('layer', 'local_verifier_reject')} "
+                    f"title={action.title!r} action_type={action.action_type.value} "
+                    f"reason={rejection.get('reason', 'unknown')}"
+                )
+                salvage_patch = rejection.get("details", {}).get("salvage_patch") if isinstance(
+                    rejection.get("details"), dict
+                ) else None
+                salvage_action = _candidate_from_salvage_patch(salvage_patch)
+                if salvage_action is None:
+                    continue
+                if not verifier.is_action_valid(current, salvage_action):
+                    _debug_runtime_print(
+                        f"[runner][lss] salvage_patch_reject title={salvage_action.title!r} "
+                        f"action_type={salvage_action.action_type.value}"
+                    )
+                    continue
+                _debug_runtime_print(
+                    f"[runner][lss] salvage_patch_accept title={salvage_action.title!r} "
+                    f"action_type={salvage_action.action_type.value}"
+                )
+                action = salvage_action
+
+            children = apply_action(current, action)
+            valid_children: list[ReasoningState] = []
+            for child in children:
+                canonical = canonicalizer.canonicalize(child)
+                if verifier.is_state_valid(canonical):
+                    valid_children.append(canonical)
+                    continue
+                rejection = verifier.consume_last_state_rejection() or {}
+                _debug_runtime_print(
+                    "[runner][lss] state_transition_reject "
+                    f"title={action.title!r} action_type={action.action_type.value} "
+                    f"reason={rejection.get('reason', 'invalid_child_state')}"
+                )
+
+            if not valid_children:
+                continue
+
+            valid_children.sort(
+                key=lambda child: (_progress_delta(current, child)[0], child.score),
+                reverse=True,
+            )
+            merged_state = valid_children[0]
+            accepted_actions = 1
+            break
+
+        summaries.append(
+            IterationSummary(
+                depth=depth,
+                candidate_actions=candidate_count,
+                accepted_actions=accepted_actions,
+                next_states=1 if merged_state is not None else 0,
+                kept_after_beam=1 if merged_state is not None else 0,
+            )
+        )
+
+        if merged_state is None:
+            return SequentialLSSResult(
+                final_state=current,
+                termination_reason="no_valid_next_states",
+                depth_reached=depth + 1,
+                iteration_summaries=summaries,
+            )
+
+        progress_delta, progress_components = _progress_delta(current, merged_state)
+        _debug_runtime_print(
+            f"[runner][lss] progress depth={depth} delta={progress_delta:.2f} components={progress_components}"
+        )
+        current = merged_state
+        depth += 1
+
+        if is_terminal_state(current):
+            return SequentialLSSResult(
+                final_state=current,
+                termination_reason=_terminal_reason_for_state(current),
+                depth_reached=depth,
+                iteration_summaries=summaries,
+            )
+
+        if progress_delta <= 0:
+            return SequentialLSSResult(
+                final_state=current,
+                termination_reason="no_useful_progress",
+                depth_reached=depth,
+                iteration_summaries=summaries,
+            )
+
+    return SequentialLSSResult(
+        final_state=current,
+        termination_reason="transition_budget_reached",
+        depth_reached=depth,
+        iteration_summaries=summaries,
+    )
+
+
 def solve(
     raw_problem: str,
     *,
@@ -616,7 +847,7 @@ def solve(
         print(
             "debug_single_path enabled: "
             "retries={pt:0,pct:0,lss:0}, token_caps={pt:512,pct:512,lss:256}, "
-            "beam_width=1, candidate_cap_per_state=1, fallback_disabled=true"
+            "beam_width=1, transition_budget=1, candidate_cap_per_state=1, fallback_disabled=true"
         )
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
@@ -642,6 +873,14 @@ def solve(
         current_mode=mode_selection.mode,
         config=cfg.policy_config,
     )
+    explicit_deep_requested = cfg.requested_mode.strip().lower() == SolveMode.DEEP.value
+    if (
+        explicit_deep_requested
+        and fallback.trigger
+        and fallback.reason == "no_valid_branches_survived"
+        and pressure < cfg.policy_config.budget_pressure_fallback_threshold
+    ):
+        return primary
     if cfg.debug_single_path:
         return primary
     if not fallback.trigger or fallback.fallback_mode is None:
@@ -710,7 +949,6 @@ def _run_attempt(
     """Execute one mode-configured solve attempt."""
 
     mode_settings = mode_settings_for(mode_selection.mode, cfg.policy_config)
-    effective_beam_width = 1 if cfg.debug_single_path else min(cfg.beam_width, mode_settings.beam_width)
     effective_candidate_cap = 1 if cfg.debug_single_path else min(
         cfg.max_candidates, mode_settings.max_candidates_per_state
     )
@@ -788,20 +1026,19 @@ def _run_attempt(
         attempt_context=attempt_context,
     )
     tracking_verifier = TrackingCompositeVerifier(build_default_verifier(), domain_plugins=plugins)
-    controller_result = run_search(
-        state,
-        proposer,
+    transition_budget = 1 if cfg.debug_single_path else max(
+        1,
+        min(cfg.lss_transition_budget, cfg.max_depth, mode_settings.max_depth),
+    )
+    lss_result = _run_sequential_lss_loop(
+        initial_state=state,
+        proposer=proposer,
         verifier=tracking_verifier,
-        canonicalizer=DefaultStateCanonicalizer(),
-        config=ControllerConfig(
-            max_depth=min(cfg.max_depth, mode_settings.max_depth),
-            beam_width=effective_beam_width,
-            max_wall_time_s=cfg.max_wall_time_s,
-            candidate_cap_per_state=effective_candidate_cap,
-        ),
+        transition_budget=transition_budget,
     )
 
-    best_state, answer_decision = _select_best_terminal(controller_result)
+    best_state = lss_result.final_state
+    answer_decision = select_answer_across_states([best_state])
     trace_summary = _summarize_trace(best_state)
     endgame_output = _maybe_run_endgame_stage(
         client=active_client,
@@ -841,8 +1078,8 @@ def _run_attempt(
     return SolveResult(
         best_state=best_state,
         trace_summary=trace_summary,
-        termination_reason=controller_result.termination_reason,
-        depth_reached=controller_result.depth_reached,
+        termination_reason=lss_result.termination_reason,
+        depth_reached=lss_result.depth_reached,
         predicted_answer=answer_decision.predicted_answer,
         answer_status=answer_decision.answer_status,
         answer_source=(
@@ -860,7 +1097,7 @@ def _run_attempt(
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         policy_trace=policy_trace,
-        iteration_summaries=controller_result.iteration_summaries,
+        iteration_summaries=lss_result.iteration_summaries,
         verifier_rejections_by_level=dict(tracking_verifier.rejections_by_level),
     )
 
@@ -1430,6 +1667,8 @@ def _estimate_budget_pressure(depth_reached: int, termination_reason: str, cfg: 
     depth_pressure = 0.0 if cfg.max_depth <= 0 else min(depth_reached / cfg.max_depth, 1.0)
     if termination_reason == "budget_exhausted":
         return 1.0
+    if 0 < cfg.max_wall_time_s <= 1.0:
+        return max(depth_pressure, 0.9)
     return depth_pressure
 
 

@@ -299,7 +299,7 @@ class StubLLMClient(UnifiedLLMClient):
                         "rationale": "produce canonical placeholder state",
                         "inputs": [],
                         "outputs": ["canonical_placeholder"],
-                        "added_facts": [],
+                        "added_facts": ["canonical_placeholder established"],
                         "added_constraints": [],
                         "branch_labels": [],
                         "metadata": {"normalized_form": "placeholder"},

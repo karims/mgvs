@@ -102,6 +102,11 @@ def select_fallback(
             return FallbackDecision(True, SolveMode.FAST, "no_valid_branches_survived")
         return FallbackDecision(False, None, "terminal_state_already_reached")
 
+    if termination_reason == "no_useful_progress":
+        if best_state.status == StateStatus.ACTIVE:
+            return FallbackDecision(True, SolveMode.FAST, "no_valid_branches_survived")
+        return FallbackDecision(False, None, "terminal_state_already_reached")
+
     if malformed_output_count >= config.malformed_retry_fallback_threshold:
         return FallbackDecision(True, SolveMode.FAST, "repeated_malformed_llm_outputs")
 
