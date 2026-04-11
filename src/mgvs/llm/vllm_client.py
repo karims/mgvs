@@ -11,7 +11,7 @@ from urllib import error, request
 
 from mgvs.config import VLLMRuntimeConfig
 from mgvs.llm.base import LLMRequestOptions, UnifiedLLMClient
-from mgvs.llm.parser import parse_structured_json_object
+from mgvs.llm.parser import parse_structured_json_object, validate_stage_payload
 from mgvs.llm.prompts import STAGE_ENDGAME, STAGE_LSS, STAGE_PCT, STAGE_PT, build_stage_system_prompt
 
 Transport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
@@ -265,6 +265,7 @@ class VLLMClient(UnifiedLLMClient):
 
         parsed = parse_structured_json_object(content)
         parsed_success = bool(parsed)
+        schema_error = validate_stage_payload(stage, parsed) if parsed_success else "invalid_json"
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(
                 f"[{stage}] parsed_json_keys:",
@@ -275,13 +276,17 @@ class VLLMClient(UnifiedLLMClient):
                 f"selected_response_field={selected_field} finish_reason={finish_reason} "
                 f"parsed_success={parsed_success}"
             )
-        if parsed:
+            print(f"[{stage}] schema_error={schema_error}")
+        if parsed and schema_error is None:
             if os.environ.get("MGVS_DEBUG_LLM") == "1":
                 print(f"[{stage}] parse_status=success")
                 print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return json.dumps(parsed, sort_keys=True)
 
-        self._last_failure_reason = "truncated_output" if finish_reason == "length" else "malformed_json"
+        if parsed and schema_error is not None:
+            self._last_failure_reason = schema_error
+        else:
+            self._last_failure_reason = "truncated_output" if finish_reason == "length" else "malformed_json"
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             if finish_reason == "length":
                 print(f"[{stage}] finish_reason_length_detected")
@@ -419,7 +424,7 @@ class VLLMClient(UnifiedLLMClient):
                 "global_constraints": [],
                 "witness_parameters": {},
                 "open_goals": [],
-                "metadata": {"fallback_reason": reason},
+                "metadata": {"fallback_reason": reason, "stage": stage},
             }
             return json.dumps(payload, sort_keys=True)
 
@@ -429,21 +434,23 @@ class VLLMClient(UnifiedLLMClient):
                 "open_goals": [],
                 "added_facts": [],
                 "added_constraints": [],
-                "metadata": {"fallback_reason": reason},
+                "metadata": {"fallback_reason": reason, "stage": stage},
             }
             return json.dumps(payload, sort_keys=True)
 
         if stage == STAGE_ENDGAME:
             payload = {
                 "answer": None,
+                "ready": False,
                 "confidence": "low",
                 "justification": [],
-                "metadata": {"fallback_reason": reason},
+                "missing_requirements": [reason],
+                "metadata": {"fallback_reason": reason, "stage": stage},
             }
             return json.dumps(payload, sort_keys=True)
 
         payload = {
             "actions": [],
-            "metadata": {"fallback_reason": reason},
+            "metadata": {"fallback_reason": reason, "stage": stage},
         }
         return json.dumps(payload, sort_keys=True)

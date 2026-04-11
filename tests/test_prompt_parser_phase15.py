@@ -100,7 +100,7 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed.strategy_tags, [])
         self.assertEqual(parsed.open_goals, [])
         self.assertEqual(parsed.candidate_equations, [])
-        self.assertEqual(parsed.answer_candidate, 50)
+        self.assertIsNone(parsed.answer_candidate)
 
     def test_lss_candidate_action_parsing(self) -> None:
         payload = {
@@ -126,10 +126,32 @@ class TestPromptParserPhase15(unittest.TestCase):
             json.dumps({"actions": [{"action_type": "rewrite", "title": "restate_constraint"}]})
         )
 
-        self.assertEqual(len(parsed), 1)
-        self.assertEqual(parsed[0].added_facts, [])
-        self.assertEqual(parsed[0].added_constraints, [])
-        self.assertEqual(parsed[0].rationale, "unspecified rationale")
+        self.assertEqual(parsed, [])
+
+    def test_lss_rejects_empty_transition(self) -> None:
+        parsed = parse_lss_output(
+            json.dumps({"actions": [{"action_type": "rewrite", "title": "empty_step", "added_facts": [], "added_constraints": []}]})
+        )
+
+        self.assertEqual(parsed, [])
+
+    def test_lss_rejects_generic_advice(self) -> None:
+        parsed = parse_lss_output(
+            json.dumps(
+                {
+                    "actions": [
+                        {
+                            "action_type": "derive_relation",
+                            "title": "consider symmetry",
+                            "added_facts": ["Try simplifying the expression."],
+                            "added_constraints": [],
+                        }
+                    ]
+                }
+            )
+        )
+
+        self.assertEqual(parsed, [])
 
     def test_malformed_response_handling(self) -> None:
         payload = {
@@ -142,7 +164,13 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed, [])
 
     def test_partial_parse_fallback(self) -> None:
-        wrapped = "prefix text {\"actions\":[{\"action_type\":\"rewrite\",\"title\":\"t\"},{\"action_type\":\"substitute\",\"title\":\"s\"}]} suffix"
+        wrapped = (
+            "prefix text "
+            "{\"actions\":["
+            "{\"action_type\":\"rewrite\",\"title\":\"t\",\"added_facts\":[\"x=1\"]},"
+            "{\"action_type\":\"substitute\",\"title\":\"s\",\"added_constraints\":[\"x>0\"]}"
+            "]} suffix"
+        )
         parsed = parse_lss_output(wrapped)
 
         self.assertEqual(len(parsed), 2)
@@ -152,9 +180,9 @@ class TestPromptParserPhase15(unittest.TestCase):
     def test_lss_parser_caps_to_two_actions(self) -> None:
         payload = {
             "actions": [
-                {"action_type": "rewrite", "title": "a"},
-                {"action_type": "substitute", "title": "b"},
-                {"action_type": "eliminate", "title": "c"},
+                {"action_type": "rewrite", "title": "a", "added_facts": ["x=1"]},
+                {"action_type": "substitute", "title": "b", "added_constraints": ["x>0"]},
+                {"action_type": "eliminate", "title": "c", "added_facts": ["y=2"]},
             ]
         }
         parsed = parse_lss_output(json.dumps(payload))
@@ -167,9 +195,11 @@ class TestPromptParserPhase15(unittest.TestCase):
         parsed = parse_endgame_solve_output(
             json.dumps(
                 {
+                    "ready": True,
                     "answer": 84,
                     "confidence": "high",
                     "justification": ["Reduced state forces a unique count."],
+                    "missing_requirements": [],
                 }
             )
         )
@@ -181,7 +211,15 @@ class TestPromptParserPhase15(unittest.TestCase):
 
     def test_endgame_null_answer(self) -> None:
         parsed = parse_endgame_solve_output(
-            json.dumps({"answer": None, "confidence": "medium", "justification": []})
+            json.dumps(
+                {
+                    "ready": False,
+                    "answer": None,
+                    "confidence": "medium",
+                    "justification": [],
+                    "missing_requirements": ["need one more bound"],
+                }
+            )
         )
 
         self.assertIsNone(parsed.answer)
@@ -189,11 +227,11 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed.confidence, "medium")
         self.assertEqual(parsed.justification, [])
 
-    def test_endgame_defaults_missing_confidence_and_justification(self) -> None:
+    def test_endgame_missing_ready_rejected(self) -> None:
         parsed = parse_endgame_solve_output(json.dumps({"answer": 17}))
 
-        self.assertEqual(parsed.answer, 17)
-        self.assertTrue(parsed.ready)
+        self.assertIsNone(parsed.answer)
+        self.assertFalse(parsed.ready)
         self.assertEqual(parsed.confidence, "low")
         self.assertEqual(parsed.justification, [])
 
@@ -201,9 +239,11 @@ class TestPromptParserPhase15(unittest.TestCase):
         parsed = parse_endgame_solve_output(
             json.dumps(
                 {
+                    "ready": True,
                     "answer": "91",
                     "confidence": "high",
                     "justification": ["Use the reduced bound."],
+                    "missing_requirements": [],
                     "essay": "ignore this",
                     "scratchwork": ["ignore this too"],
                 }
@@ -214,6 +254,23 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertTrue(parsed.ready)
         self.assertEqual(parsed.confidence, "high")
         self.assertEqual(parsed.justification, ["Use the reduced bound."])
+
+    def test_endgame_answer_rejected_when_not_ready_or_missing_requirements(self) -> None:
+        parsed = parse_endgame_solve_output(
+            json.dumps(
+                {
+                    "ready": False,
+                    "answer": 12,
+                    "confidence": "high",
+                    "justification": ["bad"],
+                    "missing_requirements": ["need reduction"],
+                }
+            )
+        )
+
+        self.assertIsNone(parsed.answer)
+        self.assertFalse(parsed.ready)
+        self.assertEqual(parsed.missing_requirements, ["need reduction"])
 
     def test_prompts_are_compact_structured_contracts(self) -> None:
         state = create_initial_state("Solve x+1=2", "equation")

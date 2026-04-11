@@ -162,9 +162,11 @@ class TestSolvePhase6(unittest.TestCase):
                 _ = prompt
                 return json.dumps(
                     {
+                        "ready": True,
                         "answer": 50,
                         "confidence": "high",
                         "justification": ["Reduced state supports a unique final count."],
+                        "missing_requirements": [],
                     }
                 )
 
@@ -219,7 +221,15 @@ class TestSolvePhase6(unittest.TestCase):
 
             def generate_endgame(self, prompt: str) -> str:
                 _ = prompt
-                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+                return json.dumps(
+                    {
+                        "ready": False,
+                        "answer": None,
+                        "confidence": "low",
+                        "justification": [],
+                        "missing_requirements": ["need one more reduction"],
+                    }
+                )
 
         result = solve("Endgame no answer demo", config=SolveConfig(), client=EndgameNoAnswerClient())
 
@@ -271,11 +281,27 @@ class TestSolvePhase6(unittest.TestCase):
 
             def generate_endgame(self, prompt: str) -> str:
                 _ = prompt
-                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+                return json.dumps(
+                    {
+                        "ready": False,
+                        "answer": None,
+                        "confidence": "low",
+                        "justification": [],
+                        "missing_requirements": ["need one more reduction"],
+                    }
+                )
 
             def generate(self, prompt: str, system_prompt: str = "") -> str:
                 _ = prompt, system_prompt
-                return json.dumps({"answer": 73})
+                return json.dumps(
+                    {
+                        "ready": True,
+                        "answer": 73,
+                        "confidence": "high",
+                        "justification": [],
+                        "missing_requirements": [],
+                    }
+                )
 
         result = solve("Final LLM answer demo", config=SolveConfig(), client=FinalLLMAnswerClient())
 
@@ -327,7 +353,15 @@ class TestSolvePhase6(unittest.TestCase):
 
             def generate_endgame(self, prompt: str) -> str:
                 _ = prompt
-                return json.dumps({"answer": None, "confidence": "low", "justification": []})
+                return json.dumps(
+                    {
+                        "ready": False,
+                        "answer": None,
+                        "confidence": "low",
+                        "justification": [],
+                        "missing_requirements": ["need one more reduction"],
+                    }
+                )
 
             def generate(self, prompt: str, system_prompt: str = "") -> str:
                 _ = prompt, system_prompt
@@ -388,12 +422,28 @@ class TestSolvePhase6(unittest.TestCase):
             def generate_endgame(self, prompt: str) -> str:
                 self.endgame_calls += 1
                 _ = prompt
-                return json.dumps({"answer": 50, "confidence": "high", "justification": []})
+                return json.dumps(
+                    {
+                        "ready": True,
+                        "answer": 50,
+                        "confidence": "high",
+                        "justification": [],
+                        "missing_requirements": [],
+                    }
+                )
 
             def generate(self, prompt: str, system_prompt: str = "") -> str:
                 self.final_calls += 1
                 _ = prompt, system_prompt
-                return json.dumps({"answer": 50})
+                return json.dumps(
+                    {
+                        "ready": True,
+                        "answer": 50,
+                        "confidence": "high",
+                        "justification": [],
+                        "missing_requirements": [],
+                    }
+                )
 
         client = WeakStateClient()
         result = solve("Weak endgame gate demo", config=SolveConfig(), client=client)

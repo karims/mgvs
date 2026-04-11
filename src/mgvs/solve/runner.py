@@ -1190,9 +1190,13 @@ def _maybe_run_endgame_stage(
         return EndgameSolveOutput()
     _debug_runtime_print(f"[runner][endgame] raw_preview={raw[:240]!r}")
     output = parse_endgame_solve_output(raw)
-    if output.answer is not None:
+    if output.answer is not None and output.ready and not output.missing_requirements:
         policy_trace.append("endgame_answer_found")
     else:
+        if output.missing_requirements:
+            _debug_runtime_print(
+                f"[runner][endgame] answer_rejected missing_requirements={output.missing_requirements!r}"
+            )
         policy_trace.append("endgame_no_answer")
     return output
 
@@ -1230,7 +1234,7 @@ def _maybe_run_final_llm_solve(
                 "Solve the problem using the provided equations and facts.",
                 "Return ONLY JSON.",
                 "Do not include explanations.",
-                'Output format: {"answer": integer}',
+                'Output format: {"ready": boolean, "answer": integer|null, "confidence": "high|medium|low", "justification": [], "missing_requirements": []}',
             ],
         },
         sort_keys=True,
@@ -1256,7 +1260,11 @@ def _maybe_run_final_llm_solve(
         return None
     _debug_runtime_print(f"[runner][final_llm] raw_preview={raw[:240]!r}")
     output = parse_endgame_solve_output(raw)
-    if output.answer is None:
+    if output.answer is None or not output.ready or output.missing_requirements:
+        if output.missing_requirements:
+            _debug_runtime_print(
+                f"[runner][final_llm] answer_rejected missing_requirements={output.missing_requirements!r}"
+            )
         policy_trace.append("final_llm_no_answer")
         return None
     policy_trace.append("final_llm_answer_found")

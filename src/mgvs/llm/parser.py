@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mgvs.actions.models import ActionType, CandidateAction
+from mgvs.llm.prompts import STAGE_ENDGAME, STAGE_LSS, STAGE_PCT, STAGE_PT
 from mgvs.state.models import ReasoningState
 
 
@@ -23,6 +24,13 @@ def _parser_debug_print(message: str) -> None:
 
     if _parser_debug_enabled():
         print(message)
+
+
+def _stage_parse_error(stage: str, reason: str, *, details: str = "") -> None:
+    """Emit a compact stage-specific parse failure message."""
+
+    suffix = f" details={details}" if details else ""
+    _parser_debug_print(f"[parser][{stage}] failure_reason={reason}{suffix}")
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,46 @@ def _load_json_object(text: str) -> dict[str, Any]:
     return parse_structured_json_object(text)
 
 
+def validate_stage_payload(stage: str, obj: dict[str, Any]) -> str | None:
+    """Return a stage-specific schema failure reason, or None when acceptable."""
+
+    if not isinstance(obj, dict) or not obj:
+        return "invalid_json"
+
+    if stage == STAGE_PT:
+        required_any = {
+            "objects",
+            "variables",
+            "domains",
+            "relations",
+            "constraints",
+            "goal",
+            "unknowns_remaining",
+            "symbolic_objects",
+            "current_equations",
+            "domain_constraints",
+            "global_constraints",
+            "open_goals",
+        }
+        return None if any(key in obj for key in required_any) else "missing_required_fields"
+
+    if stage == STAGE_PCT:
+        required_any = {"strategy_tags", "open_goals", "candidate_equations", "answer_candidate"}
+        return None if any(key in obj for key in required_any) else "missing_required_fields"
+
+    if stage == STAGE_LSS:
+        if "actions" not in obj:
+            return "missing_required_fields"
+        return None if isinstance(obj.get("actions"), list) else "schema_mismatch"
+
+    if stage == STAGE_ENDGAME:
+        if "ready" not in obj:
+            return "missing_required_fields"
+        return None if isinstance(obj.get("ready"), bool) else "schema_mismatch"
+
+    return None
+
+
 def _string_list(value: Any) -> list[str]:
     """Convert unknown payload to list[str]."""
 
@@ -158,6 +206,10 @@ def parse_pt_output(text: str) -> PTUpdate:
     """Parse PT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
+    payload_error = validate_stage_payload(STAGE_PT, obj)
+    if payload_error is not None:
+        _stage_parse_error(STAGE_PT, payload_error)
+        return PTUpdate()
     objects = _string_list(_first_present(obj, ["objects", "entities"]))
     variables = _string_list(_first_present(obj, ["variables"]))
     unknowns_remaining = _string_list(_first_present(obj, ["unknowns_remaining", "unknowns"]))
@@ -222,10 +274,14 @@ def parse_pct_output(text: str) -> PCTUpdate:
     """Parse PCT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
-    if not obj:
-        return PCTUpdate(answer_candidate=_extract_pct_answer_candidate(text))
+    payload_error = validate_stage_payload(STAGE_PCT, obj)
+    if payload_error is not None:
+        _stage_parse_error(STAGE_PCT, payload_error)
+        return PCTUpdate()
 
     answer_candidate = _int_or_none(obj.get("answer_candidate"))
+    if obj.get("answer_candidate") is not None and answer_candidate is None:
+        _stage_parse_error(STAGE_PCT, "schema_mismatch", details="answer_candidate_not_integer")
     return PCTUpdate(
         strategy_tags=_string_list(obj.get("strategy_tags")),
         open_goals=_string_list(obj.get("open_goals")),
@@ -267,22 +323,44 @@ def _int_or_none(value: Any) -> int | None:
     return None
 
 
-def _extract_pct_answer_candidate(text: str) -> int | None:
-    """Extract integer answer candidate from raw non-JSON PCT text."""
+def _looks_generic_advice(text: str) -> bool:
+    """Return whether text reads like advice instead of a state update."""
 
-    match = re.search(r"(?:\*\*)?\banswer\b(?:\*\*)?\s*:\s*([-+]?\d+)", text, re.IGNORECASE)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    generic_prefixes = (
+        "consider ",
+        "try ",
+        "use ",
+        "look for ",
+        "analyze ",
+        "simplify ",
+        "eliminate ",
+        "substitute ",
+        "rewrite ",
+    )
+    generic_phrases = (
+        "a good next step",
+        "the next step",
+        "it may help",
+        "should help",
+        "strategy",
+        "tactic",
+        "reason about",
+    )
+    if lowered.startswith(generic_prefixes):
+        return True
+    return any(phrase in lowered for phrase in generic_phrases)
 
 
 def parse_lss_output(text: str) -> list[CandidateAction]:
     """Parse LSS JSON output into bounded candidate actions."""
 
     obj = _load_json_object(text)
+    payload_error = validate_stage_payload(STAGE_LSS, obj)
+    if payload_error is not None:
+        _stage_parse_error(STAGE_LSS, payload_error)
     if os.environ.get("MGVS_DEBUG_PARSER") == "1":
         print("\n===== PARSE_LSS_OUTPUT INPUT START =====")
         print(text)
@@ -293,8 +371,6 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         )
 
     raw_actions = obj.get("actions")
-    if raw_actions is None and {"action_type", "title"}.issubset(set(obj.keys())):
-        raw_actions = [obj]
     if not isinstance(raw_actions, list):
         if os.environ.get("MGVS_DEBUG_PARSER") == "1":
             print("parse_lss_output: raw_actions is not a list ->", raw_actions)
@@ -313,6 +389,7 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         try:
             action_type = ActionType(action_type_raw)
         except ValueError:
+            _stage_parse_error(STAGE_LSS, "schema_mismatch", details=f"invalid_action_type:{action_type_raw}")
             if os.environ.get("MGVS_DEBUG_PARSER") == "1":
                 print("parse_lss_output: invalid action_type ->", action_type_raw, "item:", item)
             continue
@@ -320,8 +397,18 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         title = str(_first_present(item, ["title", "name"]) or "").strip()
         rationale = str(_first_present(item, ["rationale", "why"]) or "").strip()
         if not title:
+            _stage_parse_error(STAGE_LSS, "missing_required_fields", details="title")
             if os.environ.get("MGVS_DEBUG_PARSER") == "1":
                 print("parse_lss_output: missing title ->", item)
+            continue
+
+        added_facts = _string_list(_first_present(item, ["added_facts", "facts"]))
+        added_constraints = _string_list(_first_present(item, ["added_constraints", "constraints"]))
+        if action_type not in {ActionType.BRANCH, ActionType.PRUNE} and not added_facts and not added_constraints:
+            _stage_parse_error(STAGE_LSS, "empty_transition", details=title)
+            continue
+        if any(_looks_generic_advice(value) for value in [title, *added_facts, *added_constraints]):
+            _stage_parse_error(STAGE_LSS, "schema_mismatch", details=f"generic_advice:{title}")
             continue
 
         parsed.append(
@@ -331,10 +418,8 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
                 rationale=rationale or "unspecified rationale",
                 inputs=_string_list(_first_present(item, ["inputs"])),
                 outputs=_string_list(_first_present(item, ["outputs"])),
-                added_facts=_string_list(_first_present(item, ["added_facts", "facts"])),
-                added_constraints=_string_list(
-                    _first_present(item, ["added_constraints", "constraints"])
-                ),
+                added_facts=added_facts,
+                added_constraints=added_constraints,
                 branch_labels=_string_list(_first_present(item, ["branch_labels", "branches"])),
                 metadata=_dict_payload(item.get("metadata")),
             )
@@ -351,18 +436,32 @@ def parse_endgame_solve_output(text: str) -> EndgameSolveOutput:
     """Parse endgame JSON output into a compact answer payload."""
 
     obj = _load_json_object(text)
+    payload_error = validate_stage_payload(STAGE_ENDGAME, obj)
+    if payload_error is not None:
+        _stage_parse_error(STAGE_ENDGAME, payload_error)
+        return EndgameSolveOutput()
     answer = _int_or_none(obj.get("answer"))
     confidence = str(obj.get("confidence", "low") or "low").strip().lower()
     if confidence not in {"high", "medium", "low"}:
         confidence = "low"
     ready_raw = obj.get("ready")
     ready = ready_raw if isinstance(ready_raw, bool) else (answer is not None)
+    missing_requirements = _string_list(obj.get("missing_requirements"))
+    if obj.get("answer") is not None and answer is None:
+        _stage_parse_error(STAGE_ENDGAME, "schema_mismatch", details="answer_not_integer")
+    if not ready and answer is not None:
+        _stage_parse_error(STAGE_ENDGAME, "schema_mismatch", details="answer_present_when_not_ready")
+        answer = None
+    if missing_requirements and answer is not None:
+        _stage_parse_error(STAGE_ENDGAME, "schema_mismatch", details="answer_present_with_missing_requirements")
+        answer = None
+        ready = False
     return EndgameSolveOutput(
         answer=answer,
         ready=ready,
         confidence=confidence,
         justification=_string_list(obj.get("justification")),
-        missing_requirements=_string_list(obj.get("missing_requirements")),
+        missing_requirements=missing_requirements,
     )
 
 

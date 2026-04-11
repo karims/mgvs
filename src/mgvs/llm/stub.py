@@ -312,9 +312,11 @@ class StubLLMClient(UnifiedLLMClient):
         _ = prompt
         return json.dumps(
             {
+                "ready": False,
                 "answer": None,
                 "confidence": "low",
                 "justification": [],
+                "missing_requirements": ["No reduced state answer available in stub."],
             }
         )
 

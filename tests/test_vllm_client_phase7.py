@@ -194,9 +194,11 @@ class TestVLLMClientPhase7(unittest.TestCase):
                         "message": {
                             "content": json.dumps(
                                 {
+                                    "ready": True,
                                     "answer": 50,
                                     "confidence": "high",
                                     "justification": ["Reduced state isolates a unique count."],
+                                    "missing_requirements": [],
                                 }
                             )
                         }
@@ -222,6 +224,7 @@ class TestVLLMClientPhase7(unittest.TestCase):
         parsed = parse_endgame_solve_output(output)
 
         self.assertEqual(parsed.answer, 50)
+        self.assertTrue(parsed.ready)
         self.assertEqual(parsed.confidence, "high")
         self.assertEqual(parsed.justification, ["Reduced state isolates a unique count."])
 
@@ -293,8 +296,36 @@ class TestVLLMClientPhase7(unittest.TestCase):
         parsed = parse_endgame_solve_output(output)
 
         self.assertIsNone(parsed.answer)
+        self.assertFalse(parsed.ready)
         self.assertEqual(parsed.confidence, "low")
         self.assertEqual(parsed.justification, [])
+
+    def test_endgame_schema_mismatch_falls_back(self) -> None:
+        def transport(endpoint, payload, headers, timeout):
+            _ = endpoint, payload, headers, timeout
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "answer": 17,
+                                    "confidence": "high",
+                                    "justification": ["missing ready field"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        client = VLLMClient(runtime=VLLMRuntimeConfig(model_name="stub"), transport=transport)
+        output = client.generate_endgame("prompt")
+        parsed = parse_endgame_solve_output(output)
+
+        self.assertIsNone(parsed.answer)
+        self.assertFalse(parsed.ready)
+        self.assertIn("missing_required_fields", parsed.missing_requirements)
 
     def test_malformed_response_shape_fallback(self) -> None:
         def transport(endpoint, payload, headers, timeout):

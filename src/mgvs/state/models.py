@@ -156,7 +156,7 @@ class ReasoningState:
 
         if not self.goal.target:
             self.goal.target = self.open_goals[0] if self.open_goals else ""
-        if not self.open_goals and self.goal.target:
+        if self.status != StateStatus.SOLVED and not self.open_goals and self.goal.target:
             self.open_goals.append(self.goal.target)
 
         symbol_names = [name for name in self.symbolic_objects.keys()]
@@ -190,7 +190,7 @@ class ReasoningState:
         self.answer_candidates = _dedupe_items(self.answer_candidates)
         self.notes = _dedupe_items(self.notes)
 
-        if self.goal.target and self.goal.target not in self.open_goals:
+        if self.status != StateStatus.SOLVED and self.goal.target and self.goal.target not in self.open_goals:
             self.open_goals.insert(0, self.goal.target)
 
         if self.confidence < 0.0:
