@@ -239,24 +239,27 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(pct["output_schema"].keys()),
             ["answer_candidate", "candidate_equations", "open_goals", "strategy_tags"],
         )
-        self.assertEqual(len(pct["example_outputs"]), 2)
+        self.assertEqual(len(pct["example_outputs"]), 1)
         self.assertEqual(
             pct["example_outputs"][0]["candidate_equations"],
             ["A + a = 2(B + b)", "A*a = 4(B*b)"],
         )
-        self.assertIsNone(pct["example_outputs"][1]["answer_candidate"])
         self.assertIn("Do not solve the full problem in this stage.", pct["instructions"])
         self.assertIn("Do not provide bullet lists.", pct["instructions"])
         self.assertIn(
-            "candidate_equations must be directly grounded in the problem statement or be simple variable-definition equations introduced explicitly.",
+            "candidate_equations must be direct translations of stated relations only or simple variable-definition equations introduced explicitly.",
             pct["instructions"],
         )
         self.assertIn(
-            "Do not invent transformed equations such as shifted sums or shifted products unless they are explicitly stated in the problem.",
+            "Transfer conditions may be described in open_goals, not rewritten as equations, unless exact new variables are introduced explicitly.",
             pct["instructions"],
         )
         self.assertIn(
-            "Do not rewrite equations after hypothetical transfers unless the transfer variables are introduced explicitly and the transformed relation is exact.",
+            "Do not invent transformed equations.",
+            pct["instructions"],
+        )
+        self.assertIn(
+            "Do not simplify or manipulate equations in this stage.",
             pct["instructions"],
         )
         self.assertIn("Prefer direct statement equations first.", pct["instructions"])
