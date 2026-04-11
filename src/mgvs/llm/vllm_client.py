@@ -15,6 +15,7 @@ from mgvs.llm.parser import parse_structured_json_object
 from mgvs.llm.prompts import STAGE_ENDGAME, STAGE_LSS, STAGE_PCT, STAGE_PT, build_stage_system_prompt
 
 Transport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
+_STRUCTURED_STAGES = {STAGE_PT, STAGE_PCT, STAGE_LSS, STAGE_ENDGAME}
 
 
 def _debug_enabled() -> bool:
@@ -239,10 +240,11 @@ class VLLMClient(UnifiedLLMClient):
                 f"{list(response.keys()) if isinstance(response, dict) else response}"
             )
 
-        selected_field, content = self._extract_message_text(response)
+        selected_field, content, used_lower_priority_field = self._extract_message_text(response, stage=stage)
         finish_reason = self._extract_finish_reason(response)
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"[{stage}] selected_response_field={selected_field}")
+            print(f"[{stage}] used_lower_priority_field={used_lower_priority_field}")
             print(f"\n===== RAW {stage.upper()} CONTENT START =====")
             print(content)
             print(f"===== RAW {stage.upper()} CONTENT END =====\n")
@@ -310,32 +312,41 @@ class VLLMClient(UnifiedLLMClient):
         return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
-    def _extract_message_text(response: dict[str, Any]) -> tuple[str, str]:
+    def _field_order_for_stage(stage: str | None = None) -> tuple[str, ...]:
+        """Return response-field precedence for the given stage."""
+
+        if stage in _STRUCTURED_STAGES:
+            return ("reasoning_content", "reasoning", "content")
+        return ("content", "reasoning_content", "reasoning")
+
+    @staticmethod
+    def _extract_message_text(response: dict[str, Any], *, stage: str | None = None) -> tuple[str, str, bool]:
         """Extract assistant text and the source field from response shape."""
 
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
-            return "missing", ""
+            return "missing", "", False
 
         first = choices[0]
         if not isinstance(first, dict):
-            return "missing", ""
+            return "missing", "", False
 
         message = first.get("message")
         if not isinstance(message, dict):
-            return "missing", ""
+            return "missing", "", False
 
-        for field_name in ("content", "reasoning_content", "reasoning"):
+        field_order = VLLMClient._field_order_for_stage(stage)
+        for index, field_name in enumerate(field_order):
             text = _normalize_message_field(message.get(field_name, ""))
             if text.strip():
-                return field_name, text
-        return "missing", ""
+                return field_name, text, index > 0
+        return "missing", "", False
 
     @staticmethod
     def _extract_content(response: dict[str, Any]) -> str:
         """Extract assistant content from OpenAI-compatible response shape."""
 
-        _, content = VLLMClient._extract_message_text(response)
+        _, content, _ = VLLMClient._extract_message_text(response)
         return content
 
     @staticmethod

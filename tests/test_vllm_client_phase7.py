@@ -104,6 +104,57 @@ class TestVLLMClientPhase7(unittest.TestCase):
 
         self.assertEqual(VLLMClient._extract_content(response), '{"strategy_tags":["tag_a"]}')
 
+    def test_structured_stage_prefers_reasoning_content_over_content(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "long free-form essay",
+                        "reasoning_content": '{"actions":[{"action_type":"rewrite","title":"ok"}]}',
+                        "reasoning": '{"fallback": 3}',
+                    }
+                }
+            ]
+        }
+
+        field, content, used_lower_priority = VLLMClient._extract_message_text(response, stage="lss")
+        self.assertEqual(field, "reasoning_content")
+        self.assertEqual(content, '{"actions":[{"action_type":"rewrite","title":"ok"}]}')
+        self.assertFalse(used_lower_priority)
+
+    def test_structured_stage_uses_reasoning_when_reasoning_content_missing(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "free-form essay",
+                        "reasoning": '{"strategy_tags":["tag_a"]}',
+                    }
+                }
+            ]
+        }
+
+        field, content, used_lower_priority = VLLMClient._extract_message_text(response, stage="pct")
+        self.assertEqual(field, "reasoning")
+        self.assertEqual(content, '{"strategy_tags":["tag_a"]}')
+        self.assertTrue(used_lower_priority)
+
+    def test_structured_stage_uses_content_when_reasoning_fields_missing(self) -> None:
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"answer": 42}',
+                    }
+                }
+            ]
+        }
+
+        field, content, used_lower_priority = VLLMClient._extract_message_text(response, stage="endgame")
+        self.assertEqual(field, "content")
+        self.assertEqual(content, '{"answer": 42}')
+        self.assertTrue(used_lower_priority)
+
     def test_generate_pt_success(self) -> None:
         def transport(endpoint, payload, headers, timeout):
             _ = endpoint, payload, headers, timeout
