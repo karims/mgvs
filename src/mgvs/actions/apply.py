@@ -119,6 +119,7 @@ def apply_action(
                 branch_fanout=len(labels),
                 score_config=score_config,
             )
+            child.normalize_in_place()
             children.append(child)
         return children
 
@@ -138,4 +139,5 @@ def apply_action(
         branch_fanout=1,
         score_config=score_config,
     )
+    updated.normalize_in_place()
     return [updated]

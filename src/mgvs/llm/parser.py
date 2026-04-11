@@ -214,6 +214,7 @@ def apply_pt_update(state: ReasoningState, update: PTUpdate) -> ReasoningState:
     next_state.open_goals.extend(update.open_goals)
     for fact in update.derived_facts:
         next_state.add_fact(fact)
+    next_state.normalize_in_place()
     return next_state
 
 
@@ -242,6 +243,8 @@ def apply_pct_update(state: ReasoningState, update: PCTUpdate) -> ReasoningState
     next_state.current_equations.extend(update.candidate_equations)
     if update.answer_candidate is not None:
         next_state.add_fact(f"answer_candidate = {update.answer_candidate}")
+        next_state.answer_candidates.append(str(update.answer_candidate))
+    next_state.normalize_in_place()
     return next_state
 
 
