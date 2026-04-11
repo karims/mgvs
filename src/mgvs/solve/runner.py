@@ -144,17 +144,29 @@ class TrackingCompositeVerifier:
             "global": 0,
             "domain": 0,
         }
+        self._last_action_rejection: dict[str, object] | None = None
+        self._last_state_rejection: dict[str, object] | None = None
 
     def is_action_valid(self, state: ReasoningState, action: CandidateAction) -> bool:
+        self._last_action_rejection = None
         result = self._verifier.verify_action(state, action)
         self._record_rejections(result)
         if not result.passed:
             failure = result.first_failure
+            if failure is not None:
+                self._last_action_rejection = {
+                    "layer": f"{failure.level}_verifier_reject",
+                    "reason": failure.reason,
+                    "details": dict(failure.details),
+                    "title": action.title,
+                    "action_type": action.action_type.value,
+                }
             if failure is not None and failure.level == "local":
+                detail_hint = _format_rejection_details(failure.details)
                 _debug_runtime_print(
                     "[runner][verify] local_reject "
                     f"action_title={action.title!r} action_type={action.action_type.value} "
-                    f"reason={failure.reason}"
+                    f"reason={failure.reason} details={detail_hint}"
                 )
             return False
 
@@ -162,21 +174,55 @@ class TrackingCompositeVerifier:
             domain_result = plugin.validate_action(state, action)
             if not domain_result.passed:
                 self.rejections_by_level["domain"] = self.rejections_by_level.get("domain", 0) + 1
+                self._last_action_rejection = {
+                    "layer": "domain_verifier_reject",
+                    "reason": domain_result.reason,
+                    "details": dict(domain_result.details),
+                    "title": action.title,
+                    "action_type": action.action_type.value,
+                }
                 return False
         return True
 
     def is_state_valid(self, state: ReasoningState) -> bool:
+        self._last_state_rejection = None
         result = self._verifier.verify_state(state)
         self._record_rejections(result)
         if not result.passed:
+            failure = result.first_failure
+            if failure is not None:
+                self._last_state_rejection = {
+                    "layer": "state_transition_reject",
+                    "reason": failure.reason,
+                    "details": dict(failure.details),
+                }
             return False
 
         for plugin in self._domain_plugins:
             domain_result = plugin.validate_state(state)
             if not domain_result.passed:
                 self.rejections_by_level["domain"] = self.rejections_by_level.get("domain", 0) + 1
+                self._last_state_rejection = {
+                    "layer": "state_transition_reject",
+                    "reason": domain_result.reason,
+                    "details": dict(domain_result.details),
+                }
                 return False
         return True
+
+    def consume_last_action_rejection(self) -> dict[str, object] | None:
+        """Return and clear last action-level rejection details."""
+
+        rejection = self._last_action_rejection
+        self._last_action_rejection = None
+        return rejection
+
+    def consume_last_state_rejection(self) -> dict[str, object] | None:
+        """Return and clear last state-level rejection details."""
+
+        rejection = self._last_state_rejection
+        self._last_state_rejection = None
+        return rejection
 
     def _record_rejections(self, result: CombinedVerificationResult) -> None:
         if result.passed:
@@ -222,6 +268,22 @@ def _debug_runtime_print(message: str) -> None:
 
     if _debug_runtime_enabled():
         print(message)
+
+
+def _format_rejection_details(details: dict[str, object]) -> str:
+    """Render compact rejection details for debug logs."""
+
+    if not details:
+        return "none"
+    preferred_keys = ("field", "error", "examples", "action_type")
+    parts: list[str] = []
+    for key in preferred_keys:
+        if key not in details:
+            continue
+        parts.append(f"{key}={details[key]!r}")
+    if not parts:
+        parts = [f"{key}={value!r}" for key, value in details.items()]
+    return ", ".join(parts)
 
 
 def _stage_cache_disabled() -> bool:
@@ -485,11 +547,16 @@ class DomainAwareProposer:
         seen_signatures: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
         seen_semantic_signatures: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
         for action in actions:
+            _debug_runtime_print(
+                "[runner][lss] candidate "
+                f"title={action.title!r} action_type={action.action_type.value} "
+                f"added_facts={action.added_facts!r} added_constraints={action.added_constraints!r}"
+            )
             signature = _action_signature(action)
             semantic_signature = _semantic_action_signature(action)
             if signature in accepted_signatures or signature in seen_signatures:
                 _debug_runtime_print(
-                    f"[runner][lss] reject duplicate_action title={action.title!r} "
+                    f"[runner][lss] duplicate_reject title={action.title!r} "
                     f"action_type={action.action_type.value} signature={signature}"
                 )
                 continue
@@ -498,20 +565,21 @@ class DomainAwareProposer:
                 and (semantic_signature in accepted_semantic_signatures or semantic_signature in seen_semantic_signatures)
             ):
                 _debug_runtime_print(
-                    f"[runner][lss] reject duplicate_action_semantic title={action.title!r} "
-                    f"action_type={action.action_type.value} signature={semantic_signature}"
+                    f"[runner][lss] duplicate_reject title={action.title!r} "
+                    f"action_type={action.action_type.value} reason=duplicate_action_semantic "
+                    f"signature={semantic_signature}"
                 )
                 continue
             if _is_equation_restatement(state, action):
                 _debug_runtime_print(
-                    f"[runner][lss] reject equation_restatement title={action.title!r} "
-                    f"action_type={action.action_type.value}"
+                    f"[runner][lss] no_new_information_reject title={action.title!r} "
+                    f"action_type={action.action_type.value} reason=equation_restatement"
                 )
                 continue
             if _action_adds_no_new_information(state, action):
                 _debug_runtime_print(
-                    f"[runner][lss] reject no_new_information title={action.title!r} "
-                    f"action_type={action.action_type.value} signature={signature}"
+                    f"[runner][lss] no_new_information_reject title={action.title!r} "
+                    f"action_type={action.action_type.value} signature={semantic_signature}"
                 )
                 continue
             filtered.append(action)

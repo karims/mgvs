@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 import time
 from typing import Callable, Protocol
 
@@ -95,6 +96,19 @@ class IdentityCanonicalizer:
         return state
 
 
+def _debug_runtime_enabled() -> bool:
+    """Return whether controller-level debug tracing is enabled."""
+
+    return os.environ.get("MGVS_DEBUG_RUNTIME") == "1" or os.environ.get("MGVS_DEBUG_LLM") == "1"
+
+
+def _debug_runtime_print(message: str) -> None:
+    """Print controller debug message when enabled."""
+
+    if _debug_runtime_enabled():
+        print(message)
+
+
 def run_search(
     initial_state: ReasoningState,
     proposer: ActionProposer,
@@ -160,13 +174,38 @@ def run_search(
                     budget_exhausted = True
                     break
                 if not state_verifier.is_action_valid(state, action):
+                    rejection = getattr(state_verifier, "consume_last_action_rejection", lambda: None)()
+                    if rejection:
+                        _debug_runtime_print(
+                            "[controller] "
+                            f"{rejection.get('layer', 'local_verifier_reject')} "
+                            f"title={rejection.get('title', '')!r} "
+                            f"action_type={rejection.get('action_type', '')} "
+                            f"reason={rejection.get('reason', '')} "
+                            f"details={rejection.get('details', {})!r}"
+                        )
                     continue
                 accepted_count += 1
 
-                for child in apply_action(state, action):
+                children = apply_action(state, action)
+                if not children:
+                    _debug_runtime_print(
+                        "[controller] state_transition_reject "
+                        f"title={action.title!r} action_type={action.action_type.value} "
+                        "reason=no_child_states_from_apply_action"
+                    )
+                for child in children:
                     canonical = state_canonicalizer.canonicalize(child)
                     if state_verifier.is_state_valid(canonical):
                         next_states.append(canonical)
+                    else:
+                        rejection = getattr(state_verifier, "consume_last_state_rejection", lambda: None)()
+                        _debug_runtime_print(
+                            "[controller] state_transition_reject "
+                            f"title={action.title!r} action_type={action.action_type.value} "
+                            f"reason={(rejection or {}).get('reason', 'invalid_child_state')} "
+                            f"details={(rejection or {}).get('details', {})!r}"
+                        )
             if budget_exhausted:
                 break
 
@@ -182,6 +221,8 @@ def run_search(
                 kept_after_beam=len(kept),
             )
         )
+        if accepted_count > 0 and len(next_states) == 0:
+            _debug_runtime_print("accepted candidate(s) produced no next states; see rejection logs above")
 
         if budget_exhausted:
             _mark_budget_exhausted(kept if kept else beam)

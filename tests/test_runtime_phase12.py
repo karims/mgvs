@@ -111,6 +111,19 @@ class _NoActionClient:
         return '{"actions":[]}'
 
 
+class _OneActionProposer:
+    def propose(self, state, depth):
+        _ = state, depth
+        return [
+            CandidateAction(
+                action_type=ActionType.DERIVE_CONSTRAINT,
+                title="candidate_bound",
+                rationale="test candidate",
+                added_facts=["n <= 10"],
+            )
+        ]
+
+
 class TestRuntimePhase12(unittest.TestCase):
     """Covers budget enforcement, stage caching, and vLLM retry behavior."""
 
@@ -132,6 +145,52 @@ class TestRuntimePhase12(unittest.TestCase):
 
         self.assertEqual(result.termination_reason, "budget_exhausted")
         self.assertTrue(any(s.status == StateStatus.DEAD_END for s in result.final_beam))
+
+    def test_controller_logs_when_accepted_candidates_produce_no_next_states(self) -> None:
+        class _RejectingVerifier:
+            def __init__(self) -> None:
+                self._last_action_rejection = None
+                self._last_state_rejection = None
+
+            def is_action_valid(self, state, action):
+                _ = state, action
+                self._last_action_rejection = None
+                return True
+
+            def is_state_valid(self, state):
+                _ = state
+                self._last_state_rejection = {
+                    "layer": "state_transition_reject",
+                    "reason": "synthetic_invalid_state",
+                    "details": {"field": "current_equations"},
+                }
+                return False
+
+            def consume_last_action_rejection(self):
+                rejection = self._last_action_rejection
+                self._last_action_rejection = None
+                return rejection
+
+            def consume_last_state_rejection(self):
+                rejection = self._last_state_rejection
+                self._last_state_rejection = None
+                return rejection
+
+        state = create_initial_state("p", "proof")
+        buffer = StringIO()
+        with patch.dict(os.environ, {"MGVS_DEBUG_RUNTIME": "1"}, clear=False):
+            with redirect_stdout(buffer):
+                run_search(
+                    state,
+                    _OneActionProposer(),
+                    verifier=_RejectingVerifier(),
+                    config=ControllerConfig(max_depth=1, beam_width=1, candidate_cap_per_state=1),
+                )
+
+        output = buffer.getvalue()
+        self.assertIn("state_transition_reject", output)
+        self.assertIn("synthetic_invalid_state", output)
+        self.assertIn("accepted candidate(s) produced no next states", output)
 
     def test_stage_caching_reuses_pt_pct_lss(self) -> None:
         client = _CountingClient()
