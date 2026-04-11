@@ -879,25 +879,33 @@ def _endgame_readiness(state: ReasoningState) -> tuple[bool, list[str]]:
     """Evaluate endgame readiness and return blocking reasons when not ready."""
 
     reasons: list[str] = []
-    if not state.accepted_steps:
-        reasons.append("accepted_steps_empty")
-        return False, reasons
+    has_meaningful_step = _has_meaningful_accepted_step(state)
+    has_concrete_fact = _has_concrete_algebraic_or_numeric_fact(state)
+    has_explicit_numeric_bound = _has_explicit_numeric_bound(state)
+    has_derived_equation = _has_derived_equation_beyond_translations(state)
 
-    if _last_step_is_weak_restatement(state):
+    if not state.accepted_steps and not state.derived_facts and not has_explicit_numeric_bound and not has_derived_equation:
+        reasons.append("accepted_steps_empty_and_no_derived_facts")
+    if state.accepted_steps and _last_step_is_weak_restatement(state):
         reasons.append("last_step_weak_restatement")
 
-    has_derived_equation = _has_derived_equation_beyond_translations(state)
-    has_concrete_fact = _has_concrete_algebraic_or_numeric_fact(state)
     has_multi_step_progress = _has_multi_step_progress(state)
     counting_bound_required = _looks_like_counting_or_bound_problem(state)
-    has_explicit_numeric_bound = _has_explicit_numeric_bound(state)
     only_vague_constraints = _has_only_vague_constraints(state)
 
     if counting_bound_required and not has_explicit_numeric_bound:
         reasons.append("missing_explicit_numeric_bound")
-    if only_vague_constraints and not (has_derived_equation or has_concrete_fact or has_multi_step_progress):
+    if only_vague_constraints and not (has_meaningful_step or has_concrete_fact or has_explicit_numeric_bound):
         reasons.append("only_vague_qualitative_constraints")
-    if not any([has_derived_equation, has_concrete_fact, has_multi_step_progress, has_explicit_numeric_bound]):
+    if not any(
+        [
+            has_meaningful_step,
+            has_derived_equation,
+            has_concrete_fact,
+            has_multi_step_progress,
+            has_explicit_numeric_bound,
+        ]
+    ):
         reasons.append("no_concrete_reduction")
 
     return not reasons, reasons
@@ -924,6 +932,22 @@ def _has_concrete_algebraic_or_numeric_fact(state: ReasoningState) -> bool:
     """Check whether derived facts include concrete algebraic or numeric consequences."""
 
     return any(_is_concrete_relation_text(str(fact).strip()) for fact in state.derived_facts if str(fact).strip())
+
+
+def _has_meaningful_accepted_step(state: ReasoningState) -> bool:
+    """Check whether at least one accepted step added concrete new information."""
+
+    for step in state.accepted_steps:
+        values: list[str] = []
+        added_facts = step.updates.get("added_facts", [])
+        added_constraints = step.updates.get("added_constraints", [])
+        if isinstance(added_facts, list):
+            values.extend(str(item).strip() for item in added_facts if str(item).strip())
+        if isinstance(added_constraints, list):
+            values.extend(str(item).strip() for item in added_constraints if str(item).strip())
+        if any(_is_concrete_relation_text(value) or _contains_explicit_numeric_bound(value) for value in values):
+            return True
+    return False
 
 
 def _has_multi_step_progress(state: ReasoningState) -> bool:
@@ -1093,6 +1117,9 @@ def _maybe_run_endgame_stage(
             f"[runner][endgame] prompt_context={json.dumps(prompt_obj.get('context', {}), sort_keys=True)}"
         )
     raw = generate_endgame(prompt)
+    if not isinstance(raw, str) or not raw:
+        policy_trace.append("endgame_no_answer")
+        return EndgameSolveOutput()
     _debug_runtime_print(f"[runner][endgame] raw_preview={raw[:240]!r}")
     output = parse_endgame_solve_output(raw)
     if output.answer is not None:

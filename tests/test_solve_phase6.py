@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 
 from mgvs.cli.main import main
 from mgvs.llm.base import UnifiedLLMClient
-from mgvs.solve.runner import SolveConfig, solve
+from mgvs.solve.runner import SolveConfig, is_endgame_ready, solve
 from mgvs.types import StateStatus
 
 
@@ -403,6 +403,22 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertIsNone(result.predicted_answer)
         self.assertNotIn("endgame_called", result.policy_trace)
         self.assertNotIn("final_llm_called", result.policy_trace)
+
+    def test_endgame_ready_with_explicit_bound_even_without_steps(self) -> None:
+        from mgvs.state.models import create_initial_state
+
+        state = create_initial_state("Rectangle count problem", "proof")
+        state.domain_constraints.append("The number of distinct perimeters is at most 999.")
+
+        self.assertTrue(is_endgame_ready(state))
+
+    def test_endgame_not_ready_for_empty_and_vague_state(self) -> None:
+        from mgvs.state.models import create_initial_state
+
+        state = create_initial_state("Rectangle count problem", "proof")
+        state.derived_facts.append("the perimeter count is tightly bounded")
+
+        self.assertFalse(is_endgame_ready(state))
 
     def test_cli_output_includes_answer_source(self) -> None:
         buffer = io.StringIO()
