@@ -24,15 +24,20 @@ class TestPromptParserPhase15(unittest.TestCase):
 
     def test_pt_structured_parse(self) -> None:
         payload = {
-            "entities": ["x"],
-            "target": "solve x",
+            "objects": ["equation"],
+            "variables": ["x"],
+            "domains": ["x is an integer"],
+            "relations": ["x+1=2"],
             "constraints": ["x+1=2", "x>=0"],
+            "goal": "solve x",
+            "unknowns_remaining": ["x"],
         }
         parsed = parse_pt_output(json.dumps(payload))
 
         self.assertIn("x", parsed.symbolic_objects)
-        self.assertEqual(parsed.current_equations, [])
-        self.assertEqual(parsed.domain_constraints, ["x+1=2", "x>=0"])
+        self.assertIn("equation", parsed.symbolic_objects)
+        self.assertEqual(parsed.current_equations, ["x+1=2"])
+        self.assertEqual(parsed.domain_constraints, ["x is an integer", "x+1=2", "x>=0"])
         self.assertEqual(parsed.global_constraints, [])
         self.assertEqual(parsed.open_goals, ["solve x"])
         self.assertEqual(parsed.derived_facts, [])
@@ -101,9 +106,9 @@ class TestPromptParserPhase15(unittest.TestCase):
         payload = {
             "actions": [
                 {
-                    "action_type": "derive_constraint",
-                    "title": "add_bound",
-                    "added_facts": ["x in R"],
+                    "action_type": "tighten_bound",
+                    "title": "add_numeric_bound",
+                    "added_facts": ["x <= 10"],
                     "added_constraints": ["x>=0"],
                 }
             ]
@@ -111,8 +116,8 @@ class TestPromptParserPhase15(unittest.TestCase):
         parsed = parse_lss_output(json.dumps(payload))
 
         self.assertEqual(len(parsed), 1)
-        self.assertEqual(parsed[0].action_type, ActionType.DERIVE_CONSTRAINT)
-        self.assertEqual(parsed[0].title, "add_bound")
+        self.assertEqual(parsed[0].action_type, ActionType.TIGHTEN_BOUND)
+        self.assertEqual(parsed[0].title, "add_numeric_bound")
         self.assertEqual(parsed[0].added_constraints, ["x>=0"])
         self.assertEqual(parsed[0].rationale, "unspecified rationale")
 
@@ -170,6 +175,7 @@ class TestPromptParserPhase15(unittest.TestCase):
         )
 
         self.assertEqual(parsed.answer, 84)
+        self.assertTrue(parsed.ready)
         self.assertEqual(parsed.confidence, "high")
         self.assertEqual(parsed.justification, ["Reduced state forces a unique count."])
 
@@ -179,6 +185,7 @@ class TestPromptParserPhase15(unittest.TestCase):
         )
 
         self.assertIsNone(parsed.answer)
+        self.assertFalse(parsed.ready)
         self.assertEqual(parsed.confidence, "medium")
         self.assertEqual(parsed.justification, [])
 
@@ -186,6 +193,7 @@ class TestPromptParserPhase15(unittest.TestCase):
         parsed = parse_endgame_solve_output(json.dumps({"answer": 17}))
 
         self.assertEqual(parsed.answer, 17)
+        self.assertTrue(parsed.ready)
         self.assertEqual(parsed.confidence, "low")
         self.assertEqual(parsed.justification, [])
 
@@ -203,6 +211,7 @@ class TestPromptParserPhase15(unittest.TestCase):
         )
 
         self.assertEqual(parsed.answer, 91)
+        self.assertTrue(parsed.ready)
         self.assertEqual(parsed.confidence, "high")
         self.assertEqual(parsed.justification, ["Use the reduced bound."])
 
@@ -234,6 +243,13 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(pct["contract"], "pct_v2")
         self.assertEqual(lss["contract"], "lss_v2")
         self.assertEqual(endgame["contract"], "endgame_v1")
+        self.assertEqual(
+            sorted(pt["output_schema"].keys()),
+            ["constraints", "domains", "goal", "objects", "relations", "unknowns_remaining", "variables"],
+        )
+        self.assertEqual(pt["example_output"]["goal"], "determine x")
+        self.assertIn("Do not solve the problem.", pt["instructions"])
+        self.assertIn("Extract only machine-usable base state.", pt["instructions"])
         self.assertEqual(pct["constraints"]["max_tactics"], 3)
         self.assertEqual(
             sorted(pct["output_schema"].keys()),
@@ -242,29 +258,31 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(len(pct["example_outputs"]), 1)
         self.assertEqual(
             pct["example_outputs"][0]["candidate_equations"],
-            ["A + a = 2(B + b)", "A*a = 4(B*b)"],
+            ["p = 2(a + b)", "4 <= p <= 2000"],
+        )
+        self.assertEqual(
+            pct["example_outputs"][0]["strategy_tags"],
+            ["canonical_variables", "bound_search_space"],
         )
         self.assertIn("Do not solve the full problem in this stage.", pct["instructions"])
-        self.assertIn("Do not provide bullet lists.", pct["instructions"])
         self.assertIn(
-            "candidate_equations must be direct translations of stated relations only or simple variable-definition equations introduced explicitly.",
+            "Strengthen the state, do not narrate strategy.",
             pct["instructions"],
         )
         self.assertIn(
-            "Transfer conditions may be described in open_goals, not rewritten as equations, unless exact new variables are introduced explicitly.",
+            "strategy_tags must be concrete and operational.",
             pct["instructions"],
         )
         self.assertIn(
-            "Do not invent transformed equations.",
+            "open_goals must describe specific state improvements, not vague plans.",
             pct["instructions"],
         )
         self.assertIn(
-            "Do not simplify or manipulate equations in this stage.",
+            "candidate_equations may contain canonical variable definitions, justified bounds, invariants, or exact case relations supported by current state.",
             pct["instructions"],
         )
-        self.assertIn("Prefer direct statement equations first.", pct["instructions"])
         self.assertIn(
-            "If a relation requires later manipulation, include it in open_goals, not candidate_equations.",
+            "Do not invent unsupported transformed equations or hidden assumptions.",
             pct["instructions"],
         )
         self.assertEqual(pct["context"]["pt_entities"], ["x"])
@@ -278,10 +296,10 @@ class TestPromptParserPhase15(unittest.TestCase):
             ["action_type", "added_constraints", "added_facts", "title"],
         )
         self.assertEqual(len(lss["example_outputs"]), 3)
-        self.assertEqual(lss["example_outputs"][0]["actions"][0]["action_type"], "substitute")
+        self.assertEqual(lss["example_outputs"][0]["actions"][0]["action_type"], "derive_relation")
         self.assertEqual(
             lss["example_outputs"][0]["actions"][0]["added_facts"],
-            ["a + s_a = b + s_b + 10"],
+            ["p = 2(a + b)"],
         )
         self.assertEqual(
             lss["example_outputs"][1]["actions"][0]["title"],
@@ -293,27 +311,27 @@ class TestPromptParserPhase15(unittest.TestCase):
         )
         self.assertEqual(lss["example_outputs"][2]["label"], "bad_example")
         self.assertIn(
-            "The action must add concrete new information grounded in the current problem context.",
+            "The action must be atomic and machine-usable.",
             lss["instructions"],
         )
         self.assertIn(
-            "Do not output a tactic label without the resulting new relation.",
+            "Choose exactly one action_type from the allowed set.",
             lss["instructions"],
         )
         self.assertIn(
-            "Every action must introduce at least one new fact or new constraint.",
+            "added_facts and added_constraints must contain only new items, not explanations.",
             lss["instructions"],
         )
         self.assertIn(
-            "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
+            "Do not restate the current state, target, or existing equations.",
             lss["instructions"],
         )
         self.assertIn(
-            "Vague bounds are forbidden unless the bound is explicit.",
+            "Do not add vague prose, unjustified assumptions, or weak observations.",
             lss["instructions"],
         )
         self.assertIn(
-            "Do not copy current equations into added_facts or added_constraints.",
+            "Prefer explicit new relations, explicit bounds, explicit invariants, or explicit finite case splits.",
             lss["instructions"],
         )
         self.assertIn(
@@ -327,10 +345,11 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(lss["context"]["derived_facts"], ["x is scalar"])
         self.assertEqual(
             sorted(endgame["output_schema"].keys()),
-            ["answer", "confidence", "justification"],
+            ["answer", "confidence", "justification", "missing_requirements", "ready"],
         )
         self.assertEqual(len(endgame["example_outputs"]), 2)
         self.assertIsNone(endgame["example_outputs"][1]["answer"])
+        self.assertFalse(endgame["example_outputs"][1]["ready"])
         self.assertEqual(endgame["example_outputs"][1]["confidence"], "low")
         self.assertEqual(
             endgame["example_outputs"][1]["justification"],
@@ -341,16 +360,17 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(endgame["context"]["trace_summary"], ["rewrite: subtract 1"])
         self.assertIn("Use the reduced state as the primary input.", endgame["instructions"])
         self.assertIn(
-            'If the reduced state is insufficient to determine a unique integer answer, return {"answer": null, ...}.',
+            'If the state is insufficient, return {"ready": false, "answer": null, ...}.',
             endgame["instructions"],
         )
+        self.assertIn("Answer only from accumulated state.", endgame["instructions"])
         self.assertIn("Do not guess.", endgame["instructions"])
         self.assertIn(
             "Do not output a confident integer answer from vague qualitative bounds alone.",
             endgame["instructions"],
         )
         self.assertIn(
-            "Only return a numeric answer when the equations and facts are sufficient to justify it.",
+            "Only return a numeric answer when the equations, facts, and constraints are sufficient to justify a unique integer.",
             endgame["instructions"],
         )
         self.assertIn(
@@ -358,6 +378,7 @@ class TestPromptParserPhase15(unittest.TestCase):
             endgame["instructions"],
         )
         self.assertIn("Return 1 to 3 short justification strings at most.", endgame["instructions"])
+        self.assertIn("If not ready, list the missing requirements compactly.", endgame["instructions"])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,14 @@ from typing import Any
 class ActionType(str, Enum):
     """Supported bounded action kinds proposed by the planner/LLM."""
 
+    DERIVE_RELATION = "derive_relation"
+    TIGHTEN_BOUND = "tighten_bound"
+    INTRODUCE_INVARIANT = "introduce_invariant"
+    CASE_SPLIT = "case_split"
+    NORMALIZE_REPRESENTATION = "normalize_representation"
+    REDUCE_TO_FINITE_SEARCH = "reduce_to_finite_search"
+    CONVERT_OBJECTIVE = "convert_objective"
+    CONSTRUCT_CANDIDATE_FORMULA = "construct_candidate_formula"
     REWRITE = "rewrite"
     SUBSTITUTE = "substitute"
     ELIMINATE = "eliminate"

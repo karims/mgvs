@@ -53,8 +53,10 @@ class EndgameSolveOutput:
     """Parsed endgame stage answer payload."""
 
     answer: int | None = None
+    ready: bool = False
     confidence: str = "low"
     justification: list[str] = field(default_factory=list)
+    missing_requirements: list[str] = field(default_factory=list)
 
 
 def parse_structured_json_object(text: str) -> dict[str, Any]:
@@ -138,19 +140,38 @@ def _dict_payload(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _merge_unique_strings(*groups: list[str]) -> list[str]:
+    """Merge string groups while preserving first-seen order."""
+
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return merged
+
+
 def parse_pt_output(text: str) -> PTUpdate:
     """Parse PT JSON output into structured update fields."""
 
     obj = _load_json_object(text)
-    entities = _string_list(_first_present(obj, ["entities", "unknowns"]))
-    target = str(_first_present(obj, ["target"]) or "").strip()
+    objects = _string_list(_first_present(obj, ["objects", "entities"]))
+    variables = _string_list(_first_present(obj, ["variables"]))
+    unknowns_remaining = _string_list(_first_present(obj, ["unknowns_remaining", "unknowns"]))
+    target = str(_first_present(obj, ["goal", "target"]) or "").strip()
+    relations = _string_list(_first_present(obj, ["relations", "current_equations", "equations"]))
+    domains = _string_list(_first_present(obj, ["domains", "domain_constraints"]))
     flat_constraints = _string_list(_first_present(obj, ["constraints"]))
 
-    if entities or target or flat_constraints:
+    if objects or variables or unknowns_remaining or target or relations or domains or flat_constraints:
+        entity_names = _merge_unique_strings(objects, variables, unknowns_remaining)
         return PTUpdate(
-            symbolic_objects={name: {"kind": "entity"} for name in entities},
-            current_equations=[],
-            domain_constraints=flat_constraints,
+            symbolic_objects={name: {"kind": "entity"} for name in entity_names},
+            current_equations=relations,
+            domain_constraints=_merge_unique_strings(domains, flat_constraints),
             global_constraints=[],
             witness_parameters={},
             open_goals=[target] if target else [],
@@ -327,13 +348,18 @@ def parse_endgame_solve_output(text: str) -> EndgameSolveOutput:
     """Parse endgame JSON output into a compact answer payload."""
 
     obj = _load_json_object(text)
+    answer = _int_or_none(obj.get("answer"))
     confidence = str(obj.get("confidence", "low") or "low").strip().lower()
     if confidence not in {"high", "medium", "low"}:
         confidence = "low"
+    ready_raw = obj.get("ready")
+    ready = ready_raw if isinstance(ready_raw, bool) else (answer is not None)
     return EndgameSolveOutput(
-        answer=_int_or_none(obj.get("answer")),
+        answer=answer,
+        ready=ready,
         confidence=confidence,
         justification=_string_list(obj.get("justification")),
+        missing_requirements=_string_list(obj.get("missing_requirements")),
     )
 
 

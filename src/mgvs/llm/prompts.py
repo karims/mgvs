@@ -1,4 +1,4 @@
-"""Prompt builders for PT, PCT, LSS, and endgame structured-output stages."""
+"""Centralized compact prompt contracts for state-first PT/PCT/LSS/endgame stages."""
 
 from __future__ import annotations
 
@@ -44,39 +44,49 @@ def _pt_target(state: ReasoningState) -> str:
 
 
 def build_pt_prompt(raw_problem: str, target_type: str) -> str:
-    """Build PT prompt contract for extracting structured problem state."""
+    """PT extracts a structured base state and does no solving."""
 
     contract = {
         "contract": PTContractVersion,
-        "task": "problem_translation",
+        "task": "structured_state_extraction",
         "input": {
             "raw_problem": raw_problem,
             "target_type": target_type,
         },
         "output_schema": {
-            "entities": ["entity"],
-            "target": "short target",
+            "objects": ["named object from problem"],
+            "variables": ["explicit symbolic quantity"],
+            "domains": ["domain or type restriction"],
+            "relations": ["exact stated relation"],
             "constraints": ["constraint"],
+            "goal": "short target",
+            "unknowns_remaining": ["unresolved quantity"],
         },
         "example_output": {
-            "entities": ["x"],
-            "target": "solve for x",
+            "objects": ["x"],
+            "variables": ["x"],
+            "domains": ["x is an integer"],
+            "relations": ["x + 1 = 2"],
             "constraints": ["x + 1 = 2"],
+            "goal": "determine x",
+            "unknowns_remaining": ["x"],
         },
         "instructions": [
             "Return JSON only.",
             "Do not include markdown fences.",
-            "Do not include derivations.",
+            "Do not solve the problem.",
             "Do not include explanations.",
-            "Do not include prose outside the JSON fields.",
-            "Keep the object lightweight and concise.",
+            "Do not include prose outside the JSON object.",
+            "Extract only machine-usable base state.",
+            "Use exact relations from the problem statement when possible.",
+            "Keep the object compact.",
         ],
     }
     return _json_block(contract)
 
 
 def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MAX_TACTICS) -> str:
-    """Build PCT prompt contract for strategy and goal proposal."""
+    """PCT strengthens state with compact, machine-usable additions."""
 
     context = {
         "raw_problem": state.raw_problem,
@@ -91,20 +101,20 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
     }
     contract = {
         "contract": PCTContractVersion,
-        "task": "concept_tactic_proposal",
+        "task": "structured_state_strengthening",
         "constraints": {"max_tactics": max_tactics},
         "context": context,
         "output_schema": {
-            "strategy_tags": ["actionable_tag"],
-            "open_goals": ["short_goal"],
-            "candidate_equations": ["short_equation"],
+            "strategy_tags": ["concrete strategy tag"],
+            "open_goals": ["specific strengthening target"],
+            "candidate_equations": ["canonical definition | justified bound | invariant | exact case relation"],
             "answer_candidate": None,
         },
         "example_outputs": [
             {
-                "strategy_tags": ["system_of_equations", "direct_translation"],
-                "open_goals": ["introduce variable definitions for unknown quantities", "defer algebraic manipulation to later steps"],
-                "candidate_equations": ["A + a = 2(B + b)", "A*a = 4(B*b)"],
+                "strategy_tags": ["canonical_variables", "bound_search_space"],
+                "open_goals": ["introduce explicit variables for side lengths", "derive a usable perimeter bound"],
+                "candidate_equations": ["p = 2(a + b)", "4 <= p <= 2000"],
                 "answer_candidate": None,
             },
         ],
@@ -112,19 +122,16 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             "Return JSON only.",
             "Do not include markdown fences.",
             "Do not include explanations.",
-            "Do not include a full derivation.",
+            "Do not include a derivation.",
             "Do not solve the full problem in this stage.",
-            "Do not provide bullet lists.",
             "Do not include prose before or after the JSON object.",
-            "If tempted to explain, instead return shorter lists.",
-            "Keep the object small and concise.",
-            "Use only these top-level keys: strategy_tags, open_goals, candidate_equations, answer_candidate.",
-            "candidate_equations must be direct translations of stated relations only or simple variable-definition equations introduced explicitly.",
-            "Transfer conditions may be described in open_goals, not rewritten as equations, unless exact new variables are introduced explicitly.",
-            "Do not invent transformed equations.",
-            "Do not simplify or manipulate equations in this stage.",
-            "Prefer direct statement equations first.",
-            "If a relation requires later manipulation, include it in open_goals, not candidate_equations.",
+            "Strengthen the state, do not narrate strategy.",
+            "Use short list items only.",
+            "strategy_tags must be concrete and operational.",
+            "open_goals must describe specific state improvements, not vague plans.",
+            "candidate_equations may contain canonical variable definitions, justified bounds, invariants, or exact case relations supported by current state.",
+            "Do not invent unsupported transformed equations or hidden assumptions.",
+            "If a useful strengthening idea cannot yet be written as an exact relation, put it in open_goals instead.",
             "If no integer answer candidate is available, set answer_candidate to null.",
         ],
     }
@@ -132,7 +139,7 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
 
 
 def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
-    """Build LSS prompt contract for bounded candidate action synthesis."""
+    """LSS proposes exactly one typed state transition for the validator/updater."""
 
     context = {
         "raw_problem": state.raw_problem,
@@ -159,10 +166,14 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "output_schema": {
             "actions": [
                 {
-                    "action_type": "derive_constraint|rewrite|substitute|eliminate",
+                    "action_type": (
+                        "derive_relation|tighten_bound|introduce_invariant|case_split|"
+                        "normalize_representation|reduce_to_finite_search|convert_objective|"
+                        "construct_candidate_formula"
+                    ),
                     "title": "short title",
-                    "added_facts": ["fact"],
-                    "added_constraints": ["constraint"],
+                    "added_facts": ["atomic new fact"],
+                    "added_constraints": ["atomic new constraint"],
                 }
             ]
         },
@@ -170,9 +181,9 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             {
                 "actions": [
                     {
-                        "action_type": "substitute",
-                        "title": "derive_shifted_sum_relation",
-                        "added_facts": ["a + s_a = b + s_b + 10"],
+                        "action_type": "derive_relation",
+                        "title": "derive_even_perimeter_form",
+                        "added_facts": ["p = 2(a + b)"],
                         "added_constraints": [],
                     }
                 ]
@@ -180,9 +191,9 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             {
                 "actions": [
                     {
-                        "action_type": "derive_constraint",
+                        "action_type": "tighten_bound",
                         "title": "derive_explicit_perimeter_count_bound",
-                        "added_facts": ["Possible rectangle perimeters range from 4 to 2000 and are even."],
+                        "added_facts": ["Possible rectangle perimeters are even integers from 4 to 2000."],
                         "added_constraints": ["The number of distinct perimeters is at most 999."],
                     }
                 ]
@@ -191,26 +202,26 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
                 "label": "bad_example",
                 "actions": [
                     {
-                        "action_type": "eliminate",
-                        "title": "eliminate variable",
-                        "added_facts": ["a + b = c"],
+                        "action_type": "derive_relation",
+                        "title": "repeat_goal",
+                        "added_facts": ["Need the final answer modulo 10^5."],
                         "added_constraints": [],
                     }
                 ],
-                "reason": "does not introduce new information",
+                "reason": "restates context instead of adding a usable transition",
             }
         ],
         "instructions": [
             "Return JSON only.",
             "Do not include markdown fences.",
-            "Emit at most 1 action.",
+            "Emit exactly one action when a valid transition exists; otherwise return {\"actions\": []}.",
             "Use only the fields shown in output_schema.",
-            "The action must add concrete new information grounded in the current problem context.",
-            "Do not output a tactic label without the resulting new relation.",
-            "Every action must introduce at least one new fact or new constraint.",
-            "Do not copy current equations into added_facts or added_constraints.",
-            "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
-            "Vague bounds are forbidden unless the bound is explicit.",
+            "Choose exactly one action_type from the allowed set.",
+            "The action must be atomic and machine-usable.",
+            "added_facts and added_constraints must contain only new items, not explanations.",
+            "Do not restate the current state, target, or existing equations.",
+            "Do not add vague prose, unjustified assumptions, or weak observations.",
+            "Prefer explicit new relations, explicit bounds, explicit invariants, or explicit finite case splits.",
             'If no meaningful step exists, return {"actions": []}.',
         ],
     }
@@ -228,7 +239,7 @@ def build_endgame_solve_prompt(
     strategy_tags: list[str],
     trace_summary: list[str] | None = None,
 ) -> str:
-    """Build endgame prompt contract for solving from a reduced structured state."""
+    """Endgame answers only from accumulated state and reports insufficiency explicitly."""
 
     contract = {
         "contract": ENDGAMEContractVersion,
@@ -244,23 +255,28 @@ def build_endgame_solve_prompt(
             "trace_summary": list(trace_summary or []),
         },
         "output_schema": {
+            "ready": False,
             "answer": None,
             "confidence": "high|medium|low",
             "justification": ["short bullet"],
+            "missing_requirements": ["what is still missing"],
         },
         "example_outputs": [
             {
+                "ready": True,
                 "answer": 42,
                 "confidence": "medium",
                 "justification": [
-                    "Use the reduced constraints and current equations.",
-                    "Do not restart from scratch if the state already narrows the answer.",
+                    "Use the reduced relations only.",
                 ],
+                "missing_requirements": [],
             },
             {
+                "ready": False,
                 "answer": None,
                 "confidence": "low",
                 "justification": ["The reduced state does not yet determine a unique integer."],
+                "missing_requirements": ["Need one more explicit derived relation or bound."],
             },
         ],
         "instructions": [
@@ -268,15 +284,18 @@ def build_endgame_solve_prompt(
             "Do not include markdown fences.",
             "Do not include prose before or after the JSON object.",
             "Use the reduced state as the primary input.",
-            'If the reduced state is insufficient to determine a unique integer answer, return {"answer": null, ...}.',
+            "Answer only from accumulated state.",
+            'If the state is insufficient, return {"ready": false, "answer": null, ...}.',
             "Do not guess.",
             "Do not output a confident integer answer from vague qualitative bounds alone.",
-            "Only return a numeric answer when the equations and facts are sufficient to justify it.",
+            "Only return a numeric answer when the equations, facts, and constraints are sufficient to justify a unique integer.",
             "Do not restart the whole problem from scratch unless necessary.",
             "Set answer to an integer or null.",
+            "Set ready to true only when the current state is sufficient.",
             "Set confidence to exactly one of: high, medium, low.",
             "Keep justification extremely short.",
             "Return 1 to 3 short justification strings at most.",
+            "If not ready, list the missing requirements compactly.",
         ],
     }
     return _json_block(contract)
@@ -286,22 +305,27 @@ def build_stage_system_prompt(stage: str) -> str:
     """Return stage-specific system instruction for structured generation."""
 
     base = (
-        "You are a structured planning assistant. "
+        "You are a state-first reasoning assistant. "
         "Respond with JSON only and no markdown fences."
     )
     if stage == STAGE_PT:
-        return f"{base} Return only entities, target, and constraints as a tiny JSON object."
+        return (
+            f"{base} Extract only structured base state: objects, variables, domains, "
+            "relations, constraints, goal, unknowns_remaining."
+        )
     if stage == STAGE_PCT:
-        return f"{base} Return only a tiny JSON object with strategy tags, open goals, candidate equations, and optional integer answer candidate."
+        return (
+            f"{base} Strengthen the current state with compact structured additions only: "
+            "operational tags, concrete strengthening goals, exact relations/bounds, and optional answer candidate."
+        )
     if stage == STAGE_LSS:
         return (
-            f"{base} Return at most one tiny grounded candidate action, using only "
-            "action_type, title, added_facts, and added_constraints. "
-            "The action must reference the actual problem context rather than generic placeholder algebra."
+            f"{base} Return exactly one typed state transition or an empty actions list. "
+            "The transition must add atomic new state items only."
         )
     if stage == STAGE_ENDGAME:
         return (
-            f"{base} Return only a tiny endgame JSON object with answer, confidence, "
-            "and very short justification strings based on the reduced state."
+            f"{base} Answer only from accumulated state. If the state is insufficient, return ready=false "
+            "with missing_requirements instead of guessing."
         )
     return base
