@@ -274,7 +274,7 @@ class TestPromptParserPhase15(unittest.TestCase):
             sorted(lss["output_schema"]["actions"][0].keys()),
             ["action_type", "added_constraints", "added_facts", "title"],
         )
-        self.assertEqual(len(lss["example_outputs"]), 5)
+        self.assertEqual(len(lss["example_outputs"]), 3)
         self.assertEqual(lss["example_outputs"][0]["actions"][0]["action_type"], "substitute")
         self.assertEqual(
             lss["example_outputs"][0]["actions"][0]["added_facts"],
@@ -288,27 +288,17 @@ class TestPromptParserPhase15(unittest.TestCase):
             lss["example_outputs"][1]["actions"][0]["added_constraints"],
             ["The number of distinct perimeters is at most 999."],
         )
-        self.assertEqual(lss["example_outputs"][2]["label"], "bad_example_do_not_copy")
-        self.assertEqual(lss["example_outputs"][3]["label"], "bad_example_copying_current_equation")
-        self.assertEqual(lss["example_outputs"][4]["label"], "bad_example_vague_bound")
+        self.assertEqual(lss["example_outputs"][2]["label"], "bad_example")
         self.assertIn(
-            "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
+            "The action must add concrete new information grounded in the current problem context.",
             lss["instructions"],
         )
         self.assertIn(
-            "Do not invent generic placeholder variables unless they already appear in the context.",
+            "Do not output a tactic label without the resulting new relation.",
             lss["instructions"],
         )
         self.assertIn(
-            "Do not output high-level tactics like eliminate variable or simplify without showing the result.",
-            lss["instructions"],
-        )
-        self.assertIn(
-            "Every action must introduce NEW information not already present in current_equations.",
-            lss["instructions"],
-        )
-        self.assertIn(
-            "Every accepted action must introduce at least one concrete new fact or new constraint.",
+            "Every action must introduce at least one new fact or new constraint.",
             lss["instructions"],
         )
         self.assertIn(
@@ -316,41 +306,17 @@ class TestPromptParserPhase15(unittest.TestCase):
             lss["instructions"],
         )
         self.assertIn(
-            "Do not output vague constraints like the number is limited by the range unless the range or bound is made explicit.",
+            "Vague bounds are forbidden unless the bound is explicit.",
             lss["instructions"],
         )
         self.assertIn(
-            "Do not copy or restate existing equations into added_facts or added_constraints.",
+            "Do not copy current equations into added_facts or added_constraints.",
             lss["instructions"],
         )
         self.assertIn(
-            "Prefer explicit derived equations such as simplified equations, substituted expressions, reduced forms, or new equalities between variables.",
+            'If no meaningful step exists, return {"actions": []}.',
             lss["instructions"],
         )
-        self.assertIn("Do not repeat already-known equations or constraints.", lss["instructions"])
-        self.assertIn(
-            "Do not restate target-only facts such as the final modulus target without adding new information.",
-            lss["instructions"],
-        )
-        self.assertIn("Do not propose actions that merely restate current equations.", lss["instructions"])
-        self.assertIn("Do not propose empty eliminations with no downstream consequence.", lss["instructions"])
-        self.assertIn(
-            "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
-            lss["instructions"],
-        )
-        self.assertIn(
-            "Bad example reason: copying current equations is not a concrete reduction.",
-            lss["instructions"],
-        )
-        self.assertIn(
-            "Bad example reason: eliminate one variable without the resulting equation is not enough.",
-            lss["instructions"],
-        )
-        self.assertIn(
-            "Bad example reason: limited by the range is too vague unless the actual bound is stated.",
-            lss["instructions"],
-        )
-        self.assertIn('If no materially advancing action is available, return {"actions": []}.', lss["instructions"])
         self.assertEqual(lss["context"]["pt_entities"], ["x"])
         self.assertEqual(lss["context"]["pt_constraints"], ["x+1=2"])
         self.assertEqual(lss["context"]["pt_target"], "solve x")

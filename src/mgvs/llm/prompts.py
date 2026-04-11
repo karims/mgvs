@@ -193,7 +193,7 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
                 ]
             },
             {
-                "label": "bad_example_do_not_copy",
+                "label": "bad_example",
                 "actions": [
                     {
                         "action_type": "eliminate",
@@ -203,60 +203,20 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
                     }
                 ],
                 "reason": "does not introduce new information",
-            },
-            {
-                "label": "bad_example_copying_current_equation",
-                "actions": [
-                    {
-                        "action_type": "rewrite",
-                        "title": "copy_current_equation",
-                        "added_facts": ["x + y = 10"],
-                        "added_constraints": [],
-                    }
-                ],
-                "reason": "copies an existing equation instead of deriving a new one",
-            },
-            {
-                "label": "bad_example_vague_bound",
-                "actions": [
-                    {
-                        "action_type": "derive_constraint",
-                        "title": "limited_by_range",
-                        "added_facts": ["the number is limited by the range"],
-                        "added_constraints": [],
-                    }
-                ],
-                "reason": "states a vague bound without making the bound explicit",
             }
         ],
         "instructions": [
             "Return JSON only.",
-            "Do not include prose.",
             "Do not include markdown fences.",
             "Emit at most 1 action.",
-            "Prefer 1 action when possible.",
             "Use only the fields shown in output_schema.",
-            "The action must be grounded in the current problem context, PT constraints, PT target, current equations, or known facts.",
-            "Do not invent generic placeholder variables unless they already appear in the context.",
-            "Do not copy toy algebra patterns that are unrelated to the current problem.",
-            "Do not output high-level tactics like eliminate variable or simplify without showing the result.",
-            "Every action must introduce NEW information not already present in current_equations.",
-            "Every accepted action must introduce at least one concrete new fact or new constraint.",
+            "The action must add concrete new information grounded in the current problem context.",
+            "Do not output a tactic label without the resulting new relation.",
+            "Every action must introduce at least one new fact or new constraint.",
+            "Do not copy current equations into added_facts or added_constraints.",
             "If action_type is substitute or eliminate, the resulting simplified or derived relation MUST appear in added_facts.",
-            "Do not output vague constraints like the number is limited by the range unless the range or bound is made explicit.",
-            "Do not copy or restate existing equations into added_facts or added_constraints.",
-            "Prefer explicit derived equations such as simplified equations, substituted expressions, reduced forms, or new equalities between variables.",
-            "Do not repeat already-known equations or constraints.",
-            "Do not restate target-only facts such as the final modulus target without adding new information.",
-            "Do not propose actions that merely restate current equations.",
-            "Do not propose empty eliminations with no downstream consequence.",
-            "Propose one action that introduces a genuinely new constraint, bound, counting relation, or case distinction tied to the current problem.",
-            "Bad example reason: copying current equations is not a concrete reduction.",
-            "Bad example reason: eliminate one variable without the resulting equation is not enough.",
-            "Bad example reason: limited by the range is too vague unless the actual bound is stated.",
-            "Bad example reason: an eliminate action that only repeats an existing relation does not count as progress.",
-            "Good example pattern: substitute or eliminate only when the transformed result is written explicitly in added_facts.",
-            'If no materially advancing action is available, return {"actions": []}.',
+            "Vague bounds are forbidden unless the bound is explicit.",
+            'If no meaningful step exists, return {"actions": []}.',
         ],
     }
     return _json_block(contract)
