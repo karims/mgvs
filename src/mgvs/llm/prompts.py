@@ -48,11 +48,35 @@ def build_pt_prompt(raw_problem: str, target_type: str) -> str:
 
     contract = {
         "contract": PTContractVersion,
-        "task": "structured_state_extraction",
+        "task": "structured_state_extraction_trace",
         "input": {
             "raw_problem": raw_problem,
             "target_type": target_type,
         },
+        "output_format": {
+            "required_sections": [
+                "Restatement",
+                "What is given",
+                "What must be found or proved",
+                "Key mathematical structure",
+                "Suspicious quantities / invariants / substitutions",
+                "Plausible first directions",
+            ],
+            "style": "concise mathematical notes",
+        },
+        "example_trace_output": [
+            "Restatement: Restate the exact objective in one line.",
+            "What is given:",
+            "- List explicit relations and conditions from the problem text only.",
+            "What must be found or proved:",
+            "- State the exact unknown target.",
+            "Key mathematical structure:",
+            "- Identify core structure (algebraic system, counting with bounds, modular relation, etc.).",
+            "Suspicious quantities / invariants / substitutions:",
+            "- Name likely useful substitutions or invariant-like quantities.",
+            "Plausible first directions:",
+            "- Give 1-3 concrete first reduction directions.",
+        ],
         "output_schema": {
             "objects": ["named object from problem"],
             "variables": ["explicit symbolic quantity"],
@@ -72,14 +96,13 @@ def build_pt_prompt(raw_problem: str, target_type: str) -> str:
             "unknowns_remaining": ["x"],
         },
         "instructions": [
-            "Return JSON only.",
-            "Do not include markdown fences.",
             "Do not solve the problem.",
             "Do not include explanations.",
-            "Do not include prose outside the JSON object.",
             "Extract only machine-usable base state.",
             "Use exact relations from the problem statement when possible.",
             "Keep the object compact.",
+            "Return sectioned free-text notes using exactly the required headings.",
+            "Keep each section short and mathematically precise.",
         ],
     }
     return _json_block(contract)
@@ -101,9 +124,33 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
     }
     contract = {
         "contract": PCTContractVersion,
-        "task": "structured_state_strengthening",
+        "task": "structured_state_strengthening_trace",
         "constraints": {"max_tactics": max_tactics},
         "context": context,
+        "output_format": {
+            "required_sections": [
+                "Candidate approaches",
+                "Why each approach might help",
+                "Possible intermediate lemmas",
+                "Useful reformulations",
+                "Risks / dead ends",
+            ],
+            "style": "serious exploratory planning notes",
+        },
+        "example_trace_output": [
+            "Candidate approaches:",
+            "- Approach A: direct elimination on primary equations.",
+            "- Approach B: derive explicit bounds before elimination.",
+            "Why each approach might help:",
+            "- A may remove one unknown rapidly.",
+            "- B may reduce to finite cases.",
+            "Possible intermediate lemmas:",
+            "- A lemma that converts target into bounded parameters.",
+            "Useful reformulations:",
+            "- Rewrite target in terms of lower-dimensional quantities.",
+            "Risks / dead ends:",
+            "- Symmetric manipulations that only restate given equations.",
+        ],
         "output_schema": {
             "strategy_tags": ["concrete strategy tag"],
             "open_goals": ["specific strengthening target"],
@@ -119,12 +166,9 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             },
         ],
         "instructions": [
-            "Return JSON only.",
-            "Do not include markdown fences.",
             "Do not include explanations.",
             "Do not include a derivation.",
             "Do not solve the full problem in this stage.",
-            "Do not include prose before or after the JSON object.",
             "Strengthen the state, do not narrate strategy.",
             "Use short list items only.",
             "strategy_tags must be concrete and operational.",
@@ -133,6 +177,8 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             "Do not invent unsupported transformed equations or hidden assumptions.",
             "If a useful strengthening idea cannot yet be written as an exact relation, put it in open_goals instead.",
             "If no integer answer candidate is available, set answer_candidate to null.",
+            "Return sectioned free-text notes using exactly the required headings.",
+            "Keep each section concise and mathematically serious.",
         ],
     }
     return _json_block(contract)
@@ -156,13 +202,32 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
     }
     contract = {
         "contract": LSSContractVersion,
-        "task": "local_step_synthesis",
+        "task": "local_step_synthesis_trace",
         "context": context,
         "constraints": {
             "max_candidates": 1 if max_candidates >= 1 else 1,
             "preferred_candidates": 1,
             "bounded_actions_only": True,
         },
+        "output_format": {
+            "required_sections": [
+                "Candidate next steps",
+                "Why each step helps",
+                "What each step would establish",
+                "Most promising immediate continuation",
+            ],
+            "style": "compact transition notes",
+        },
+        "example_trace_output": [
+            "Candidate next steps:",
+            "- Derive one explicit transformed relation from the currently active equations.",
+            "Why each step helps:",
+            "- It removes one free degree of freedom.",
+            "What each step would establish:",
+            "- A concrete relation that can be reused in the next reduction.",
+            "Most promising immediate continuation:",
+            "- Continue from the strongest newly derived relation.",
+        ],
         "output_schema": {
             "actions": [
                 {
@@ -209,20 +274,17 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
                     }
                 ],
                 "reason": "restates context instead of adding a usable transition",
-            }
+            },
         ],
         "instructions": [
-            "Return JSON only.",
-            "Do not include markdown fences.",
-            "Emit exactly one action when a valid transition exists; otherwise return {\"actions\": []}.",
-            "Use only the fields shown in output_schema.",
-            "Choose exactly one action_type from the allowed set.",
             "The action must be atomic and machine-usable.",
             "added_facts and added_constraints must contain only new items, not explanations.",
             "Do not restate the current state, target, or existing equations.",
             "Do not add vague prose, unjustified assumptions, or weak observations.",
             "Prefer explicit new relations, explicit bounds, explicit invariants, or explicit finite case splits.",
-            'If no meaningful step exists, return {"actions": []}.',
+            "Return sectioned free-text notes using exactly the required headings.",
+            "List at most two candidate next steps.",
+            "Keep each candidate concrete and directly actionable.",
         ],
     }
     return _json_block(contract)
@@ -304,24 +366,21 @@ def build_endgame_solve_prompt(
 def build_stage_system_prompt(stage: str) -> str:
     """Return stage-specific system instruction for structured generation."""
 
-    base = (
-        "You are a state-first reasoning assistant. "
-        "Respond with JSON only and no markdown fences."
-    )
+    base = "You are a state-first reasoning assistant."
     if stage == STAGE_PT:
         return (
-            f"{base} Extract only structured base state: objects, variables, domains, "
-            "relations, constraints, goal, unknowns_remaining."
+            f"{base} Produce serious sectioned trace notes with the PT headings exactly as requested. "
+            "Do not solve; extract and organize the mathematical state."
         )
     if stage == STAGE_PCT:
         return (
-            f"{base} Strengthen the current state with compact structured additions only: "
-            "operational tags, concrete strengthening goals, exact relations/bounds, and optional answer candidate."
+            f"{base} Produce sectioned PCT planning notes only. "
+            "Keep content compact, tactical, and non-derivational."
         )
     if stage == STAGE_LSS:
         return (
-            f"{base} Return exactly one typed state transition or an empty actions list. "
-            "The transition must add atomic new state items only."
+            f"{base} Produce sectioned LSS local-step notes with concrete next steps. "
+            "Avoid vague advice; focus on immediate mathematical reductions."
         )
     if stage == STAGE_ENDGAME:
         return (

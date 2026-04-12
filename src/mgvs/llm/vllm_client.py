@@ -16,6 +16,7 @@ from mgvs.llm.prompts import STAGE_ENDGAME, STAGE_LSS, STAGE_PCT, STAGE_PT, buil
 
 Transport = Callable[[str, dict[str, Any], dict[str, str], float], dict[str, Any]]
 _STRUCTURED_STAGES = {STAGE_PT, STAGE_PCT, STAGE_LSS, STAGE_ENDGAME}
+_PHASE1_TRACE_STAGES = {STAGE_PT, STAGE_PCT, STAGE_LSS}
 
 
 def _debug_enabled() -> bool:
@@ -29,6 +30,12 @@ def _debug_print(message: str) -> None:
 
     if _debug_enabled():
         print(message)
+
+
+def _phase1_trace_enabled() -> bool:
+    """Return whether temporary Phase 1 free-text trace mode is enabled."""
+
+    return os.environ.get("MGVS_PHASE1_TRACE") == "1"
 
 
 def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -245,7 +252,8 @@ class VLLMClient(UnifiedLLMClient):
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             print(f"[{stage}] selected_response_field={selected_field}")
             print(f"[{stage}] used_lower_priority_field={used_lower_priority_field}")
-            print(f"\n===== RAW {stage.upper()} CONTENT START =====")
+            print(f"\n=== {stage.upper()} RAW OUTPUT ===")
+            print(f"===== RAW {stage.upper()} CONTENT START =====")
             print(content)
             print(f"===== RAW {stage.upper()} CONTENT END =====\n")
             print(f"[{stage}] raw_content_length={len(content)}")
@@ -262,6 +270,19 @@ class VLLMClient(UnifiedLLMClient):
                 print(f"[{stage}] failure_reason=empty_response")
                 print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return None
+
+        if _phase1_trace_enabled() and stage in _PHASE1_TRACE_STAGES:
+            # PHASE1_TRACE: Temporary passthrough to preserve readable free-text
+            # stage traces for PT/PCT/LSS debugging without strict JSON gating.
+            if os.environ.get("MGVS_DEBUG_LLM") == "1":
+                print(f"[{stage}] phase1_trace_passthrough=true")
+                print(
+                    f"[{stage}] attempt_summary retry_index={attempt_index} "
+                    f"selected_response_field={selected_field} finish_reason={finish_reason} parsed_success=skipped"
+                )
+                print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
+            self._last_failure_reason = "none"
+            return content
 
         parsed = parse_structured_json_object(content)
         parsed_success = bool(parsed)

@@ -33,6 +33,139 @@ def _stage_parse_error(stage: str, reason: str, *, details: str = "") -> None:
     _parser_debug_print(f"[parser][{stage}] failure_reason={reason}{suffix}")
 
 
+def _phase1_trace_enabled() -> bool:
+    """Return whether temporary Phase 1 free-text trace mode is enabled."""
+
+    return os.environ.get("MGVS_PHASE1_TRACE") == "1"
+
+
+def _strip_bullet_prefix(text: str) -> str:
+    """Normalize common bullet/number prefixes from a line."""
+
+    value = text.strip()
+    value = re.sub(r"^\s*(?:[-*•]+|\d+[.)])\s*", "", value)
+    return value.strip()
+
+
+def _trace_lines(text: str) -> list[str]:
+    """Return non-empty normalized lines for free-text stage traces."""
+
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip().strip("`")
+        if not line:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _trace_section_items(text: str, headings: set[str]) -> list[str]:
+    """Extract bullet-like lines from the requested trace sections."""
+
+    normalized_headings = {value.lower().strip(": ") for value in headings}
+    current_heading = ""
+    items: list[str] = []
+    for line in _trace_lines(text):
+        normalized = line.lower().strip(": ")
+        if normalized in normalized_headings:
+            current_heading = normalized
+            continue
+        if current_heading and _strip_bullet_prefix(line):
+            value = _strip_bullet_prefix(line)
+            if value and value not in items:
+                items.append(value)
+    return items
+
+
+def _extract_equation_like(values: list[str]) -> list[str]:
+    """Collect equation-like strings from free-text traces."""
+
+    equations: list[str] = []
+    for value in values:
+        stripped = value.strip()
+        if stripped and any(token in stripped for token in ("=", "<=", ">=", "<", ">")) and stripped not in equations:
+            equations.append(stripped)
+    return equations
+
+
+def _parse_pt_trace_output(text: str) -> PTUpdate:
+    """PHASE1_TRACE: best-effort PT extraction from sectioned free text."""
+
+    given = _trace_section_items(text, {"what is given", "key mathematical structure"})
+    target = _trace_section_items(text, {"what must be found or proved"})
+    suspicious = _trace_section_items(text, {"suspicious quantities / invariants / substitutions"})
+    directions = _trace_section_items(text, {"plausible first directions"})
+    merged_facts = _merge_unique_strings(given, suspicious, directions)
+    equations = _extract_equation_like(merged_facts)
+    return PTUpdate(
+        symbolic_objects={},
+        current_equations=equations,
+        domain_constraints=[],
+        global_constraints=[],
+        witness_parameters={},
+        open_goals=target[:4],
+        derived_facts=merged_facts[:12],
+    )
+
+
+def _parse_pct_trace_output(text: str) -> PCTUpdate:
+    """PHASE1_TRACE: best-effort PCT extraction from sectioned free text."""
+
+    approaches = _trace_section_items(text, {"candidate approaches"})
+    lemmas = _trace_section_items(text, {"possible intermediate lemmas"})
+    reformulations = _trace_section_items(text, {"useful reformulations"})
+    risks = _trace_section_items(text, {"risks / dead ends"})
+    tags = [value.lower().replace(" ", "_")[:48] for value in approaches[:4]]
+    goals = _merge_unique_strings(lemmas, reformulations)
+    equations = _extract_equation_like(_merge_unique_strings(lemmas, reformulations))
+    answer_candidate = _extract_answer_candidate_from_text(text)
+    if risks:
+        goals = _merge_unique_strings(goals, [f"avoid: {risk}" for risk in risks[:2]])
+    return PCTUpdate(
+        strategy_tags=tags,
+        open_goals=goals[:6],
+        candidate_equations=equations[:6],
+        answer_candidate=answer_candidate,
+    )
+
+
+def _parse_lss_trace_output(text: str) -> list[CandidateAction]:
+    """PHASE1_TRACE: best-effort LSS extraction from sectioned free text."""
+
+    steps = _trace_section_items(text, {"candidate next steps"})
+    establishes = _trace_section_items(text, {"what each step would establish"})
+    continuation = _trace_section_items(text, {"most promising immediate continuation"})
+    candidates = _merge_unique_strings(steps, establishes, continuation)
+    parsed: list[CandidateAction] = []
+    for idx, line in enumerate(candidates[:2], start=1):
+        parsed.append(
+            CandidateAction(
+                action_type=ActionType.DERIVE_RELATION,
+                title=f"phase1_trace_step_{idx}",
+                rationale="PHASE1_TRACE free-text LSS extraction",
+                added_facts=[line],
+                added_constraints=[],
+            )
+        )
+    return parsed
+
+
+def _extract_answer_candidate_from_text(text: str) -> int | None:
+    """Extract integer answer candidate from free-text stage output."""
+
+    patterns = [
+        r"answer\s*[:=]\s*([+-]?\d+)",
+        r"final\s+answer\s*[:=]?\s*([+-]?\d+)",
+        r"\btherefore\b[^0-9-+]*([+-]?\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        return _int_or_none(match.group(1))
+    return None
+
+
 @dataclass(frozen=True)
 class PTUpdate:
     """Parsed PT stage update payload."""
@@ -208,6 +341,9 @@ def parse_pt_output(text: str) -> PTUpdate:
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_PT, obj)
     if payload_error is not None:
+        if _phase1_trace_enabled():
+            # PHASE1_TRACE: Temporary free-text compatibility for PT stage.
+            return _parse_pt_trace_output(text)
         _stage_parse_error(STAGE_PT, payload_error)
         return PTUpdate()
     objects = _string_list(_first_present(obj, ["objects", "entities"]))
@@ -276,6 +412,9 @@ def parse_pct_output(text: str) -> PCTUpdate:
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_PCT, obj)
     if payload_error is not None:
+        if _phase1_trace_enabled():
+            # PHASE1_TRACE: Temporary free-text compatibility for PCT stage.
+            return _parse_pct_trace_output(text)
         _stage_parse_error(STAGE_PCT, payload_error)
         return PCTUpdate()
 
@@ -360,6 +499,9 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_LSS, obj)
     if payload_error is not None:
+        if _phase1_trace_enabled():
+            # PHASE1_TRACE: Temporary free-text compatibility for LSS stage.
+            return _parse_lss_trace_output(text)
         _stage_parse_error(STAGE_LSS, payload_error)
     if os.environ.get("MGVS_DEBUG_PARSER") == "1":
         print("\n===== PARSE_LSS_OUTPUT INPUT START =====")
