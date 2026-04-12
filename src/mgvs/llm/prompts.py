@@ -103,6 +103,7 @@ def build_pt_prompt(raw_problem: str, target_type: str) -> str:
             "Keep the object compact.",
             "Return sectioned free-text notes using exactly the required headings.",
             "Keep each section short and mathematically precise.",
+            "Use numbered items when listing multiple points (1., 2., 3.).",
         ],
     }
     return _json_block(contract)
@@ -179,6 +180,7 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             "If no integer answer candidate is available, set answer_candidate to null.",
             "Return sectioned free-text notes using exactly the required headings.",
             "Keep each section concise and mathematically serious.",
+            "Prefer numbered items for candidate approaches and lemmas.",
         ],
     }
     return _json_block(contract)
@@ -285,6 +287,7 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             "Return sectioned free-text notes using exactly the required headings.",
             "List at most two candidate next steps.",
             "Keep each candidate concrete and directly actionable.",
+            "Prefer numbered next steps (1., 2.) for stable parsing.",
         ],
     }
     return _json_block(contract)

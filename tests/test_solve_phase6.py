@@ -86,6 +86,44 @@ class TestSolvePhase6(unittest.TestCase):
             self.assertIn("## FINAL OUTPUT / FINAL ANSWER", text)
             self.assertIn("x + 1 = 2", text)
 
+    def test_exploratory_search_records_branch_trace_and_synthesis_marker(self) -> None:
+        class ExploratoryClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Restatement:\n1. Solve for x.\n"
+                    "What is given:\n1. x + 1 = 2\n"
+                    "What must be found or proved:\n1. Determine x"
+                )
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Candidate approaches:\n1. Isolate x directly.\n"
+                    "Why each approach might help:\n1. Removes one unknown.\n"
+                    "Possible intermediate lemmas:\n1. x = 1\n"
+                    "Useful reformulations:\n1. x + 1 = 2"
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Candidate next steps:\n1. Subtract 1 from both sides.\n"
+                    "Why each step helps:\n1. Isolates x.\n"
+                    "What each step would establish:\n1. x = 1\n"
+                    "Most promising immediate continuation:\n1. Verify by substitution."
+                )
+
+        with patch.dict(os.environ, {"MGVS_PHASE1_TRACE": "1"}, clear=False):
+            result = solve(
+                "Exploratory solve demo",
+                config=SolveConfig(exploratory_search=True),
+                client=ExploratoryClient(),
+            )
+
+        self.assertTrue(any(item.startswith("exploratory_search ") for item in result.policy_trace))
+        self.assertIn("phase6_synthesis_available", result.trace_summary)
+
     def test_pct_answer_candidate_can_short_circuit_before_lss(self) -> None:
         class PCTAnswerClient(UnifiedLLMClient):
             def generate_pt(self, prompt: str) -> str:

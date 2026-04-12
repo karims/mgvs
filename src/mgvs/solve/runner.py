@@ -68,6 +68,10 @@ class SolveConfig:
     policy_config: SolvePolicyConfig = field(default_factory=SolvePolicyConfig.default)
     debug_single_path: bool = False
     experiment_state_first: bool = False
+    exploratory_search: bool = False
+    exploratory_max_initial_moves: int = 3
+    exploratory_expand_top_branches: int = 2
+    exploratory_max_depth: int = 2
 
     @classmethod
     def from_env(cls, *, target_type: str = "unspecified") -> "SolveConfig":
@@ -87,6 +91,10 @@ class SolveConfig:
             debug_single_path=os.getenv("MGVS_DEBUG_SINGLE_PATH", "0").strip().lower() in {"1", "true", "yes", "on"},
             experiment_state_first=os.getenv("MGVS_EXPERIMENT_STATE_FIRST", "0").strip().lower()
             in {"1", "true", "yes", "on"},
+            exploratory_search=os.getenv("MGVS_EXPLORATORY_SEARCH", "0").strip().lower() in {"1", "true", "yes", "on"},
+            exploratory_max_initial_moves=max(1, int(os.getenv("MGVS_EXPLORATORY_MAX_INITIAL_MOVES", "3"))),
+            exploratory_expand_top_branches=max(1, int(os.getenv("MGVS_EXPLORATORY_EXPAND_TOP_BRANCHES", "2"))),
+            exploratory_max_depth=max(1, int(os.getenv("MGVS_EXPLORATORY_MAX_DEPTH", "2"))),
         )
 
 
@@ -316,6 +324,18 @@ def _persist_phase1_trace_artifact(
             lss_text = "(none)"
 
         final_answer = "NA" if result.predicted_answer is None else str(result.predicted_answer)
+        moves_text = "(none)"
+        if attempt_context.extracted_candidate_moves:
+            rendered = []
+            for index, move in enumerate(attempt_context.extracted_candidate_moves, start=1):
+                rendered.append(
+                    f"{index}. move_text={move.get('move_text', '')}\n"
+                    f"   why_it_helps={move.get('why_it_helps', '')}\n"
+                    f"   what_it_establishes={move.get('what_it_establishes', '')}\n"
+                    f"   source_stage={move.get('source_stage', '')} score={move.get('score', '')}"
+                )
+            moves_text = "\n".join(rendered)
+        branch_text = "\n".join(attempt_context.branch_decisions) if attempt_context.branch_decisions else "(none)"
         body = "\n".join(
             [
                 "# PHASE1_TRACE RUN",
@@ -331,6 +351,15 @@ def _persist_phase1_trace_artifact(
                 "",
                 "## LSS RAW OUTPUT",
                 lss_text,
+                "",
+                "## EXTRACTED CANDIDATE MOVES",
+                moves_text,
+                "",
+                "## BRANCH EXPANSION DECISIONS",
+                branch_text,
+                "",
+                "## FINAL SYNTHESIZED ATTEMPT",
+                attempt_context.final_synthesis_text.strip() or "(none)",
                 "",
                 "## FINAL OUTPUT / FINAL ANSWER",
                 f"- termination_reason: {result.termination_reason}",
@@ -565,6 +594,37 @@ class RunAttemptContext:
     pt_raw_output: str = ""
     pct_raw_output: str = ""
     lss_raw_outputs: list[str] = field(default_factory=list)
+    # PHASE3_MOVE_EXTRACTION / PHASE5_BRANCH_SEARCH / PHASE6_SYNTHESIS trace state.
+    extracted_candidate_moves: list[dict[str, object]] = field(default_factory=list)
+    branch_decisions: list[str] = field(default_factory=list)
+    final_synthesis_text: str = ""
+
+
+@dataclass(frozen=True)
+class ExtractedCandidateMove:
+    """PHASE3_MOVE_EXTRACTION: lightweight move record from free-text traces."""
+
+    move_text: str
+    why_it_helps: str
+    what_it_establishes: str
+    source_stage: str
+    score: float = 0.0
+
+
+@dataclass
+class ExploratoryReasoningState:
+    """PHASE4_REASONING_STATE: local lightweight branch-search state container."""
+
+    problem_text: str
+    pt_text: str
+    pct_text: str
+    accepted_facts: list[str] = field(default_factory=list)
+    open_goals: list[str] = field(default_factory=list)
+    candidate_moves: list[ExtractedCandidateMove] = field(default_factory=list)
+    chosen_move_history: list[str] = field(default_factory=list)
+    current_branch_text: str = ""
+    score: float = 0.0
+    depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -628,6 +688,226 @@ def _terminal_reason_for_state(state: ReasoningState) -> str:
         if "high_priority" in tags or "high_priority_solved" in tags or state.score >= 1.0:
             return "high_priority_solved"
     return "terminal_state_reached"
+
+
+def _extract_heading_sections(text: str) -> dict[str, list[str]]:
+    """PHASE3_MOVE_EXTRACTION: parse heading-based free-text blocks into line items."""
+
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith(":") and len(line) < 120:
+            current = line[:-1].strip().lower()
+            sections.setdefault(current, [])
+            continue
+        if not current:
+            continue
+        item = re.sub(r"^\s*(?:[-*•]+|\d+[.)])\s*", "", line).strip()
+        if item:
+            sections[current].append(item)
+    return sections
+
+
+def _score_extracted_move(problem_text: str, move: ExtractedCandidateMove) -> float:
+    """PHASE5_BRANCH_SEARCH: transparent local heuristic for candidate-move utility."""
+
+    text = " ".join([move.move_text, move.why_it_helps, move.what_it_establishes]).lower()
+    score = 0.0
+    if len(move.move_text) >= 20:
+        score += 0.5
+    if any(token in text for token in ("=", "<=", ">=", "bound", "invariant", "case", "substitute", "eliminate")):
+        score += 1.0
+    if any(token in text for token in ("let ", "try ", "maybe ", "could ")):
+        score -= 0.4
+    if any(token in text for token in ("vague", "general", "strategy", "approach only")):
+        score -= 0.4
+    # Small relevance boost when move shares non-trivial terms with the problem.
+    problem_tokens = {token for token in re.findall(r"[a-zA-Z]{4,}", problem_text.lower())}
+    move_tokens = {token for token in re.findall(r"[a-zA-Z]{4,}", text)}
+    if problem_tokens and move_tokens and problem_tokens.intersection(move_tokens):
+        score += 0.5
+    if move.what_it_establishes.strip():
+        score += 0.4
+    return score
+
+
+def _extract_candidate_moves_from_traces(
+    *,
+    problem_text: str,
+    pct_text: str,
+    lss_text: str,
+    max_moves: int,
+) -> list[ExtractedCandidateMove]:
+    """PHASE3_MOVE_EXTRACTION: extract lightweight moves from PCT/LSS free-text sections."""
+
+    extracted: list[ExtractedCandidateMove] = []
+
+    pct_sections = _extract_heading_sections(pct_text)
+    pct_moves = pct_sections.get("candidate approaches", [])
+    pct_whys = pct_sections.get("why each approach might help", [])
+    pct_establish = pct_sections.get("possible intermediate lemmas", []) + pct_sections.get("useful reformulations", [])
+    for index, move_text in enumerate(pct_moves):
+        move = ExtractedCandidateMove(
+            move_text=move_text,
+            why_it_helps=pct_whys[index] if index < len(pct_whys) else "",
+            what_it_establishes=pct_establish[index] if index < len(pct_establish) else "",
+            source_stage="pct",
+        )
+        extracted.append(replace(move, score=_score_extracted_move(problem_text, move)))
+
+    lss_sections = _extract_heading_sections(lss_text)
+    lss_moves = lss_sections.get("candidate next steps", [])
+    lss_whys = lss_sections.get("why each step helps", [])
+    lss_establish = lss_sections.get("what each step would establish", [])
+    for index, move_text in enumerate(lss_moves):
+        move = ExtractedCandidateMove(
+            move_text=move_text,
+            why_it_helps=lss_whys[index] if index < len(lss_whys) else "",
+            what_it_establishes=lss_establish[index] if index < len(lss_establish) else "",
+            source_stage="lss",
+        )
+        extracted.append(replace(move, score=_score_extracted_move(problem_text, move)))
+
+    # Graceful degradation: keep one generic move from raw text if headings were not captured.
+    if not extracted:
+        fallback_line = ""
+        for line in lss_text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.endswith(":"):
+                fallback_line = stripped
+                break
+        if fallback_line:
+            move = ExtractedCandidateMove(
+                move_text=fallback_line,
+                why_it_helps="",
+                what_it_establishes="",
+                source_stage="lss",
+            )
+            extracted.append(replace(move, score=_score_extracted_move(problem_text, move)))
+
+    extracted.sort(key=lambda item: item.score, reverse=True)
+    return extracted[:max(1, max_moves)]
+
+
+def _run_shallow_branch_search(
+    *,
+    cfg: SolveConfig,
+    base_state: ReasoningState,
+    pt_text: str,
+    pct_text: str,
+    lss_text: str,
+    attempt_context: RunAttemptContext,
+) -> ExploratoryReasoningState:
+    """PHASE5_BRANCH_SEARCH: tiny branch exploration over extracted moves."""
+
+    max_initial = max(1, cfg.exploratory_max_initial_moves)
+    expand_top = max(1, cfg.exploratory_expand_top_branches)
+    max_depth = max(1, cfg.exploratory_max_depth)
+    all_moves = _extract_candidate_moves_from_traces(
+        problem_text=base_state.raw_problem,
+        pct_text=pct_text,
+        lss_text=lss_text,
+        max_moves=max_initial,
+    )
+    attempt_context.extracted_candidate_moves = [
+        {
+            "move_text": move.move_text,
+            "why_it_helps": move.why_it_helps,
+            "what_it_establishes": move.what_it_establishes,
+            "source_stage": move.source_stage,
+            "score": round(move.score, 3),
+        }
+        for move in all_moves
+    ]
+    _debug_runtime_print(
+        f"[runner][explore] extracted_moves={len(all_moves)} "
+        f"scores={[round(move.score, 2) for move in all_moves]}"
+    )
+
+    root = ExploratoryReasoningState(
+        problem_text=base_state.raw_problem,
+        pt_text=pt_text,
+        pct_text=pct_text,
+        accepted_facts=list(base_state.derived_facts),
+        open_goals=list(base_state.open_goals),
+        candidate_moves=list(all_moves),
+        chosen_move_history=[],
+        current_branch_text="",
+        score=0.0,
+        depth=0,
+    )
+
+    branches: list[ExploratoryReasoningState] = [root]
+    for depth in range(1, max_depth + 1):
+        expanded: list[ExploratoryReasoningState] = []
+        for branch in branches[:expand_top]:
+            for move in all_moves[:max_initial]:
+                if move.move_text in branch.chosen_move_history:
+                    continue
+                next_branch = ExploratoryReasoningState(
+                    problem_text=branch.problem_text,
+                    pt_text=branch.pt_text,
+                    pct_text=branch.pct_text,
+                    accepted_facts=branch.accepted_facts
+                    + ([move.what_it_establishes] if move.what_it_establishes.strip() else []),
+                    open_goals=branch.open_goals,
+                    candidate_moves=branch.candidate_moves,
+                    chosen_move_history=branch.chosen_move_history + [move.move_text],
+                    current_branch_text=(branch.current_branch_text + "\n" + move.move_text).strip(),
+                    score=branch.score + move.score,
+                    depth=depth,
+                )
+                expanded.append(next_branch)
+                attempt_context.branch_decisions.append(
+                    f"depth={depth} choose={move.move_text} score={next_branch.score:.2f}"
+                )
+        if not expanded:
+            break
+        expanded.sort(key=lambda item: item.score, reverse=True)
+        branches = expanded[:expand_top]
+        _debug_runtime_print(
+            f"[runner][explore] depth={depth} kept={len(branches)} "
+            f"top_scores={[round(branch.score, 2) for branch in branches]}"
+        )
+
+    return branches[0] if branches else root
+
+
+def _synthesize_final_attempt(
+    *,
+    state: ReasoningState,
+    exploratory: ExploratoryReasoningState,
+) -> str:
+    """PHASE6_SYNTHESIS: build a coherent final draft from best branch context."""
+
+    lines = [
+        "SYNTHESIS DRAFT",
+        "",
+        "Problem:",
+        state.raw_problem,
+        "",
+        "PT summary:",
+        exploratory.pt_text.strip() or "(none)",
+        "",
+        "PCT summary:",
+        exploratory.pct_text.strip() or "(none)",
+        "",
+        "Best branch move history:",
+    ]
+    if exploratory.chosen_move_history:
+        lines.extend([f"- {item}" for item in exploratory.chosen_move_history])
+    else:
+        lines.append("- (none)")
+    lines.append("")
+    lines.append("Accepted facts from branch:")
+    if exploratory.accepted_facts:
+        lines.extend([f"- {item}" for item in exploratory.accepted_facts])
+    else:
+        lines.append("- (none)")
+    return "\n".join(lines)
 
 
 def _candidate_from_salvage_patch(patch: object) -> CandidateAction | None:
@@ -1204,8 +1484,37 @@ def _run_attempt(
             policy_trace.append("stop_reason=parsing_failure")
 
     best_state = lss_result.final_state
+    if cfg.exploratory_search:
+        # PHASE2_SOFT_STRUCTURE / PHASE5_BRANCH_SEARCH: treat PT/PCT/LSS as proposal traces.
+        latest_lss_text = attempt_context.lss_raw_outputs[-1] if attempt_context.lss_raw_outputs else ""
+        exploratory_state = _run_shallow_branch_search(
+            cfg=cfg,
+            base_state=best_state,
+            pt_text=attempt_context.pt_raw_output,
+            pct_text=attempt_context.pct_raw_output,
+            lss_text=latest_lss_text,
+            attempt_context=attempt_context,
+        )
+        for fact in exploratory_state.accepted_facts:
+            if fact and fact not in best_state.derived_facts:
+                best_state.derived_facts.append(fact)
+        best_state.normalize_in_place()
+        attempt_context.final_synthesis_text = _synthesize_final_attempt(
+            state=best_state,
+            exploratory=exploratory_state,
+        )
+        policy_trace.append(
+            f"exploratory_search moves={len(exploratory_state.candidate_moves)} "
+            f"depth={exploratory_state.depth} score={exploratory_state.score:.2f}"
+        )
+        _debug_runtime_print(
+            f"[runner][explore] final_branch_depth={exploratory_state.depth} "
+            f"final_branch_score={exploratory_state.score:.2f}"
+        )
     answer_decision = select_answer_across_states([best_state])
     trace_summary = _summarize_trace(best_state)
+    if attempt_context.final_synthesis_text:
+        trace_summary = trace_summary + ["phase6_synthesis_available"]
     endgame_output = _maybe_run_endgame_stage(
         client=active_client,
         state=best_state,
