@@ -124,6 +124,27 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertTrue(any(item.startswith("exploratory_search ") for item in result.policy_trace))
         self.assertIn("phase6_synthesis_available", result.trace_summary)
 
+    def test_exploratory_knobs_load_from_env_with_conservative_defaults(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MGVS_EXPLORATORY_SEARCH": "1",
+                "MGVS_MAX_INITIAL_CANDIDATE_MOVES": "3",
+                "MGVS_MAX_BRANCHES_TO_EXPAND": "2",
+                "MGVS_MAX_SEARCH_DEPTH": "2",
+                "MGVS_ENABLE_VERBOSE_TRACE": "1",
+                "MGVS_ENABLE_PHASE6_SYNTHESIS": "1",
+            },
+            clear=False,
+        ):
+            cfg = SolveConfig.from_env(target_type="proof")
+        self.assertTrue(cfg.exploratory_search)
+        self.assertEqual(cfg.max_initial_candidate_moves, 3)
+        self.assertEqual(cfg.max_branches_to_expand, 2)
+        self.assertEqual(cfg.max_search_depth, 2)
+        self.assertTrue(cfg.enable_verbose_trace)
+        self.assertTrue(cfg.enable_phase6_synthesis)
+
     def test_pct_answer_candidate_can_short_circuit_before_lss(self) -> None:
         class PCTAnswerClient(UnifiedLLMClient):
             def generate_pt(self, prompt: str) -> str:

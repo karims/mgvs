@@ -69,6 +69,12 @@ class SolveConfig:
     debug_single_path: bool = False
     experiment_state_first: bool = False
     exploratory_search: bool = False
+    max_initial_candidate_moves: int = 3
+    max_branches_to_expand: int = 2
+    max_search_depth: int = 2
+    enable_verbose_trace: bool = True
+    enable_phase6_synthesis: bool = True
+    # Backward-compatible aliases for exploratory knobs.
     exploratory_max_initial_moves: int = 3
     exploratory_expand_top_branches: int = 2
     exploratory_max_depth: int = 2
@@ -92,9 +98,64 @@ class SolveConfig:
             experiment_state_first=os.getenv("MGVS_EXPERIMENT_STATE_FIRST", "0").strip().lower()
             in {"1", "true", "yes", "on"},
             exploratory_search=os.getenv("MGVS_EXPLORATORY_SEARCH", "0").strip().lower() in {"1", "true", "yes", "on"},
-            exploratory_max_initial_moves=max(1, int(os.getenv("MGVS_EXPLORATORY_MAX_INITIAL_MOVES", "3"))),
-            exploratory_expand_top_branches=max(1, int(os.getenv("MGVS_EXPLORATORY_EXPAND_TOP_BRANCHES", "2"))),
-            exploratory_max_depth=max(1, int(os.getenv("MGVS_EXPLORATORY_MAX_DEPTH", "2"))),
+            max_initial_candidate_moves=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_MAX_INITIAL_CANDIDATE_MOVES",
+                        os.getenv("MGVS_EXPLORATORY_MAX_INITIAL_MOVES", "3"),
+                    )
+                ),
+            ),
+            max_branches_to_expand=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_MAX_BRANCHES_TO_EXPAND",
+                        os.getenv("MGVS_EXPLORATORY_EXPAND_TOP_BRANCHES", "2"),
+                    )
+                ),
+            ),
+            max_search_depth=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_MAX_SEARCH_DEPTH",
+                        os.getenv("MGVS_EXPLORATORY_MAX_DEPTH", "2"),
+                    )
+                ),
+            ),
+            enable_verbose_trace=os.getenv("MGVS_ENABLE_VERBOSE_TRACE", "1").strip().lower()
+            in {"1", "true", "yes", "on"},
+            enable_phase6_synthesis=os.getenv("MGVS_ENABLE_PHASE6_SYNTHESIS", "1").strip().lower()
+            in {"1", "true", "yes", "on"},
+            exploratory_max_initial_moves=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_EXPLORATORY_MAX_INITIAL_MOVES",
+                        os.getenv("MGVS_MAX_INITIAL_CANDIDATE_MOVES", "3"),
+                    )
+                ),
+            ),
+            exploratory_expand_top_branches=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_EXPLORATORY_EXPAND_TOP_BRANCHES",
+                        os.getenv("MGVS_MAX_BRANCHES_TO_EXPAND", "2"),
+                    )
+                ),
+            ),
+            exploratory_max_depth=max(
+                1,
+                int(
+                    os.getenv(
+                        "MGVS_EXPLORATORY_MAX_DEPTH",
+                        os.getenv("MGVS_MAX_SEARCH_DEPTH", "2"),
+                    )
+                ),
+            ),
         )
 
 
@@ -295,6 +356,7 @@ def _persist_phase1_trace_artifact(
     problem_text: str,
     mode: SolveMode,
     fallback_used: bool,
+    enable_verbose_trace: bool,
     attempt_context: RunAttemptContext,
     result: SolveResult,
 ) -> None:
@@ -303,7 +365,7 @@ def _persist_phase1_trace_artifact(
     PHASE1_TRACE: temporary debugging persistence for offline inspection.
     """
 
-    if not _phase1_trace_persist_enabled():
+    if not (enable_verbose_trace or _phase1_trace_persist_enabled()):
         return
     try:
         output_dir = _phase1_trace_dir()
@@ -803,9 +865,23 @@ def _run_shallow_branch_search(
 ) -> ExploratoryReasoningState:
     """PHASE5_BRANCH_SEARCH: tiny branch exploration over extracted moves."""
 
-    max_initial = max(1, cfg.exploratory_max_initial_moves)
-    expand_top = max(1, cfg.exploratory_expand_top_branches)
-    max_depth = max(1, cfg.exploratory_max_depth)
+    # PHASE5_BRANCH_SEARCH: keep backward-compatible alias support.
+    max_initial = max(
+        1,
+        cfg.max_initial_candidate_moves
+        if cfg.max_initial_candidate_moves != 3 or cfg.exploratory_max_initial_moves == 3
+        else cfg.exploratory_max_initial_moves,
+    )
+    expand_top = max(
+        1,
+        cfg.max_branches_to_expand
+        if cfg.max_branches_to_expand != 2 or cfg.exploratory_expand_top_branches == 2
+        else cfg.exploratory_expand_top_branches,
+    )
+    max_depth = max(
+        1,
+        cfg.max_search_depth if cfg.max_search_depth != 2 or cfg.exploratory_max_depth == 2 else cfg.exploratory_max_depth,
+    )
     all_moves = _extract_candidate_moves_from_traces(
         problem_text=base_state.raw_problem,
         pct_text=pct_text,
@@ -1257,6 +1333,15 @@ def solve(
             "experiment_state_first enabled: "
             "pt=1, pct=1, lss<=3, validator=per_step, endgame=1, fallback_disabled=true"
         )
+    if cfg.exploratory_search:
+        print(
+            "exploratory_search enabled: "
+            f"max_initial_candidate_moves={cfg.max_initial_candidate_moves}, "
+            f"max_branches_to_expand={cfg.max_branches_to_expand}, "
+            f"max_search_depth={cfg.max_search_depth}, "
+            f"enable_verbose_trace={'true' if cfg.enable_verbose_trace else 'false'}, "
+            f"enable_phase6_synthesis={'true' if cfg.enable_phase6_synthesis else 'false'}"
+        )
 
     if not _within_session_budget(cfg.session_max_wall_time_s):
         return _budget_exhausted_solve_result(raw_problem=raw_problem, target_type=cfg.target_type)
@@ -1412,6 +1497,7 @@ def _run_attempt(
                 problem_text=problem_text,
                 mode=mode_selection.mode,
                 fallback_used=fallback_used,
+                enable_verbose_trace=cfg.enable_verbose_trace,
                 attempt_context=attempt_context,
                 result=pct_handoff,
             )
@@ -1449,6 +1535,7 @@ def _run_attempt(
             problem_text=problem_text,
             mode=mode_selection.mode,
             fallback_used=fallback_used,
+            enable_verbose_trace=cfg.enable_verbose_trace,
             attempt_context=attempt_context,
             result=result,
         )
@@ -1499,13 +1586,20 @@ def _run_attempt(
             if fact and fact not in best_state.derived_facts:
                 best_state.derived_facts.append(fact)
         best_state.normalize_in_place()
-        attempt_context.final_synthesis_text = _synthesize_final_attempt(
-            state=best_state,
-            exploratory=exploratory_state,
-        )
+        if cfg.enable_phase6_synthesis:
+            attempt_context.final_synthesis_text = _synthesize_final_attempt(
+                state=best_state,
+                exploratory=exploratory_state,
+            )
         policy_trace.append(
             f"exploratory_search moves={len(exploratory_state.candidate_moves)} "
             f"depth={exploratory_state.depth} score={exploratory_state.score:.2f}"
+        )
+        policy_trace.append(
+            f"exploratory_knobs initial_moves={cfg.max_initial_candidate_moves} "
+            f"expand_branches={cfg.max_branches_to_expand} max_depth={cfg.max_search_depth} "
+            f"verbose_trace={'on' if cfg.enable_verbose_trace else 'off'} "
+            f"phase6_synthesis={'on' if cfg.enable_phase6_synthesis else 'off'}"
         )
         _debug_runtime_print(
             f"[runner][explore] final_branch_depth={exploratory_state.depth} "
@@ -1587,6 +1681,7 @@ def _run_attempt(
         problem_text=problem_text,
         mode=mode_selection.mode,
         fallback_used=fallback_used,
+        enable_verbose_trace=cfg.enable_verbose_trace,
         attempt_context=attempt_context,
         result=result,
     )
