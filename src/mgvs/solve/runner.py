@@ -270,6 +270,82 @@ def _debug_runtime_print(message: str) -> None:
         print(message)
 
 
+def _phase1_trace_persist_enabled() -> bool:
+    """Return whether Phase 1 trace artifacts should be persisted."""
+
+    return os.environ.get("MGVS_PHASE1_TRACE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _phase1_trace_dir() -> str:
+    """Return output directory for Phase 1 trace artifacts."""
+
+    return os.environ.get("MGVS_PHASE1_TRACE_DIR", "out/phase1_traces")
+
+
+def _persist_phase1_trace_artifact(
+    *,
+    problem_text: str,
+    mode: SolveMode,
+    fallback_used: bool,
+    attempt_context: RunAttemptContext,
+    result: SolveResult,
+) -> None:
+    """Write one readable PT/PCT/LSS trace artifact for this run.
+
+    PHASE1_TRACE: temporary debugging persistence for offline inspection.
+    """
+
+    if not _phase1_trace_persist_enabled():
+        return
+    try:
+        output_dir = _phase1_trace_dir()
+        os.makedirs(output_dir, exist_ok=True)
+        problem_key = _problem_hash(problem_text)[:12]
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        fallback_suffix = "fallback" if fallback_used else "primary"
+        filename = f"{stamp}_{problem_key}_{mode.value}_{fallback_suffix}.md"
+        path = os.path.join(output_dir, filename)
+
+        lss_blocks = attempt_context.lss_raw_outputs or []
+        if lss_blocks:
+            lss_rendered = []
+            for index, block in enumerate(lss_blocks, start=1):
+                lss_rendered.append(f"### LSS CALL {index}\n{block.strip() or '(empty)'}")
+            lss_text = "\n\n".join(lss_rendered)
+        else:
+            lss_text = "(none)"
+
+        final_answer = "NA" if result.predicted_answer is None else str(result.predicted_answer)
+        body = "\n".join(
+            [
+                "# PHASE1_TRACE RUN",
+                "",
+                "## PROBLEM",
+                problem_text.strip() or "(empty)",
+                "",
+                "## PT RAW OUTPUT",
+                attempt_context.pt_raw_output.strip() or "(none)",
+                "",
+                "## PCT RAW OUTPUT",
+                attempt_context.pct_raw_output.strip() or "(none)",
+                "",
+                "## LSS RAW OUTPUT",
+                lss_text,
+                "",
+                "## FINAL OUTPUT / FINAL ANSWER",
+                f"- termination_reason: {result.termination_reason}",
+                f"- answer_status: {result.answer_status}",
+                f"- answer_source: {result.answer_source or 'NA'}",
+                f"- predicted_answer: {final_answer}",
+            ]
+        )
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        _debug_runtime_print(f"[runner][phase1_trace] wrote {path}")
+    except OSError as exc:
+        _debug_runtime_print(f"[runner][phase1_trace] write_failed error={exc}")
+
+
 def _format_rejection_details(details: dict[str, object]) -> str:
     """Render compact rejection details for debug logs."""
 
@@ -485,6 +561,10 @@ class RunAttemptContext:
 
     malformed_output_count: int = 0
     llm_fallback_reasons: list[str] = field(default_factory=list)
+    # PHASE1_TRACE: Keep raw stage outputs for per-run readable trace persistence.
+    pt_raw_output: str = ""
+    pct_raw_output: str = ""
+    lss_raw_outputs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -627,6 +707,7 @@ class DomainAwareProposer:
             if _stage_cache_disabled():
                 _debug_runtime_print("[runner][lss] cache_bypass enabled")
         raw = cached if cached is not None else self._client.generate_lss(prompt)
+        self._attempt_context.lss_raw_outputs.append(raw)
         if cached is None and not _stage_cache_disabled():
             _STAGE_CACHE.set("lss", state_key, raw)
             _debug_runtime_print(f"[runner][lss] cache_store key={state_key[:16]}... len={len(raw)}")
@@ -1047,6 +1128,13 @@ def _run_attempt(
             attempt_context=attempt_context,
         )
         if pct_handoff is not None:
+            _persist_phase1_trace_artifact(
+                problem_text=problem_text,
+                mode=mode_selection.mode,
+                fallback_used=fallback_used,
+                attempt_context=attempt_context,
+                result=pct_handoff,
+            )
             return pct_handoff
     else:
         pct_update = PCTUpdate()
@@ -1061,7 +1149,7 @@ def _run_attempt(
         if "lss_skipped" not in state.strategy_tags:
             state.strategy_tags.append("lss_skipped")
         decision = select_answer_across_states([state])
-        return SolveResult(
+        result = SolveResult(
             best_state=state,
             trace_summary=_summarize_trace(state),
             termination_reason="lss_stage_skipped",
@@ -1077,6 +1165,14 @@ def _run_attempt(
             policy_trace=policy_trace + [f"malformed_outputs={attempt_context.malformed_output_count}"],
             verifier_rejections_by_level={"local": 0, "consistency": 0, "global": 0, "domain": 0},
         )
+        _persist_phase1_trace_artifact(
+            problem_text=problem_text,
+            mode=mode_selection.mode,
+            fallback_used=fallback_used,
+            attempt_context=attempt_context,
+            result=result,
+        )
+        return result
 
     proposer = DomainAwareProposer(
         client=active_client,
@@ -1153,7 +1249,7 @@ def _run_attempt(
     policy_trace.append(f"malformed_outputs={attempt_context.malformed_output_count}")
     if attempt_context.llm_fallback_reasons:
         policy_trace.append(f"llm_fallback_reasons={','.join(attempt_context.llm_fallback_reasons)}")
-    return SolveResult(
+    result = SolveResult(
         best_state=best_state,
         trace_summary=trace_summary,
         termination_reason=lss_result.termination_reason,
@@ -1178,6 +1274,14 @@ def _run_attempt(
         iteration_summaries=lss_result.iteration_summaries,
         verifier_rejections_by_level=dict(tracking_verifier.rejections_by_level),
     )
+    _persist_phase1_trace_artifact(
+        problem_text=problem_text,
+        mode=mode_selection.mode,
+        fallback_used=fallback_used,
+        attempt_context=attempt_context,
+        result=result,
+    )
+    return result
 
 
 def _resolve_mode_selection(
@@ -1608,6 +1712,7 @@ def _run_pt_with_cache(
     raw = cached if cached is not None else client.generate_pt(
         build_pt_prompt(raw_problem=state.raw_problem, target_type=state.target_type)
     )
+    attempt_context.pt_raw_output = raw
     if cached is None and not _stage_cache_disabled():
         _STAGE_CACHE.set("pt", key, raw)
         _debug_runtime_print(f"[runner][pt] cache_store key={key[:16]}... len={len(raw)}")
@@ -1642,6 +1747,7 @@ def _run_pct_with_cache(
         if _stage_cache_disabled():
             _debug_runtime_print("[runner][pct] cache_bypass enabled")
     raw = cached if cached is not None else client.generate_pct(prompt)
+    attempt_context.pct_raw_output = raw
     if cached is None and not _stage_cache_disabled():
         _STAGE_CACHE.set("pct", key, raw)
         _debug_runtime_print(f"[runner][pct] cache_store key={key[:16]}... len={len(raw)}")

@@ -2,8 +2,12 @@
 
 import io
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from mgvs.cli.main import main
 from mgvs.llm.base import UnifiedLLMClient
@@ -38,6 +42,49 @@ class TestSolvePhase6(unittest.TestCase):
 
         self.assertEqual(result.best_state.status, StateStatus.PARAMETRIC)
         self.assertTrue(any("introduce_parameterized_witness" in line for line in result.trace_summary))
+
+    def test_phase1_trace_artifact_persists_pt_pct_lss_sections(self) -> None:
+        class TraceClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return "Restatement:\n- Solve for x.\nWhat is given:\n- x + 1 = 2"
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Candidate approaches:\n- isolate variable\n"
+                    "Possible intermediate lemmas:\n- x = 1\n"
+                    "Useful reformulations:\n- x + 1 = 2"
+                )
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Candidate next steps:\n- subtract 1 from both sides to get x = 1\n"
+                    "What each step would establish:\n- x = 1\n"
+                    "Most promising immediate continuation:\n- verify substitution"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(
+                os.environ,
+                {
+                    "MGVS_PHASE1_TRACE": "1",
+                    "MGVS_PHASE1_TRACE_DIR": str(Path(tmp_dir) / "traces"),
+                },
+                clear=False,
+            ):
+                solve("Trace persistence demo", config=SolveConfig(), client=TraceClient())
+
+            files = sorted((Path(tmp_dir) / "traces").glob("*.md"))
+            self.assertEqual(len(files), 1)
+            text = files[0].read_text(encoding="utf-8")
+            self.assertIn("## PROBLEM", text)
+            self.assertIn("## PT RAW OUTPUT", text)
+            self.assertIn("## PCT RAW OUTPUT", text)
+            self.assertIn("## LSS RAW OUTPUT", text)
+            self.assertIn("## FINAL OUTPUT / FINAL ANSWER", text)
+            self.assertIn("x + 1 = 2", text)
 
     def test_pct_answer_candidate_can_short_circuit_before_lss(self) -> None:
         class PCTAnswerClient(UnifiedLLMClient):
