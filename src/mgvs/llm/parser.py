@@ -39,6 +39,12 @@ def _phase1_trace_enabled() -> bool:
     return os.environ.get("MGVS_PHASE1_TRACE") == "1"
 
 
+def _phase1_trace_warn(stage: str, reason: str) -> None:
+    """Emit explicit Phase 1 compatibility warning for controlled degradation."""
+
+    print(f"[PHASE1_TRACE][WARN][{stage}] {reason}")
+
+
 def _strip_bullet_prefix(text: str) -> str:
     """Normalize common bullet/number prefixes from a line."""
 
@@ -343,7 +349,17 @@ def parse_pt_output(text: str) -> PTUpdate:
     if payload_error is not None:
         if _phase1_trace_enabled():
             # PHASE1_TRACE: Temporary free-text compatibility for PT stage.
-            return _parse_pt_trace_output(text)
+            _phase1_trace_warn(
+                STAGE_PT,
+                f"structured parse failed ({payload_error}); using free-text PT fallback",
+            )
+            fallback = _parse_pt_trace_output(text)
+            if not fallback.current_equations and not fallback.open_goals and not fallback.derived_facts:
+                _phase1_trace_warn(
+                    STAGE_PT,
+                    "free-text PT fallback extracted minimal/no structured signals",
+                )
+            return fallback
         _stage_parse_error(STAGE_PT, payload_error)
         return PTUpdate()
     objects = _string_list(_first_present(obj, ["objects", "entities"]))
@@ -414,7 +430,17 @@ def parse_pct_output(text: str) -> PCTUpdate:
     if payload_error is not None:
         if _phase1_trace_enabled():
             # PHASE1_TRACE: Temporary free-text compatibility for PCT stage.
-            return _parse_pct_trace_output(text)
+            _phase1_trace_warn(
+                STAGE_PCT,
+                f"structured parse failed ({payload_error}); using free-text PCT fallback",
+            )
+            fallback = _parse_pct_trace_output(text)
+            if not fallback.strategy_tags and not fallback.open_goals and not fallback.candidate_equations:
+                _phase1_trace_warn(
+                    STAGE_PCT,
+                    "free-text PCT fallback extracted minimal/no structured signals",
+                )
+            return fallback
         _stage_parse_error(STAGE_PCT, payload_error)
         return PCTUpdate()
 
@@ -501,7 +527,17 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
     if payload_error is not None:
         if _phase1_trace_enabled():
             # PHASE1_TRACE: Temporary free-text compatibility for LSS stage.
-            return _parse_lss_trace_output(text)
+            _phase1_trace_warn(
+                STAGE_LSS,
+                f"structured parse failed ({payload_error}); using free-text LSS fallback",
+            )
+            fallback = _parse_lss_trace_output(text)
+            if not fallback:
+                _phase1_trace_warn(
+                    STAGE_LSS,
+                    "free-text LSS fallback produced zero candidate actions",
+                )
+            return fallback
         _stage_parse_error(STAGE_LSS, payload_error)
     if os.environ.get("MGVS_DEBUG_PARSER") == "1":
         print("\n===== PARSE_LSS_OUTPUT INPUT START =====")

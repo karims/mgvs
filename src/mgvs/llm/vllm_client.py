@@ -38,6 +38,12 @@ def _phase1_trace_enabled() -> bool:
     return os.environ.get("MGVS_PHASE1_TRACE") == "1"
 
 
+def _phase1_trace_warn(stage: str, reason: str) -> None:
+    """Emit explicit Phase 1 compatibility warning for controlled degradation."""
+
+    print(f"[PHASE1_TRACE][WARN][{stage}] {reason}")
+
+
 def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
     """Return headers safe for debug printing."""
 
@@ -274,6 +280,10 @@ class VLLMClient(UnifiedLLMClient):
         if _phase1_trace_enabled() and stage in _PHASE1_TRACE_STAGES:
             # PHASE1_TRACE: Temporary passthrough to preserve readable free-text
             # stage traces for PT/PCT/LSS debugging without strict JSON gating.
+            _phase1_trace_warn(
+                stage,
+                "structured parsing bypassed; forwarding raw stage text for inspection",
+            )
             if os.environ.get("MGVS_DEBUG_LLM") == "1":
                 print(f"[{stage}] phase1_trace_passthrough=true")
                 print(
