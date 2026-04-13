@@ -151,6 +151,30 @@ class TestSolvePhase6(unittest.TestCase):
         self.assertTrue(cfg.enable_verbose_trace)
         self.assertTrue(cfg.enable_phase6_synthesis)
 
+    def test_exploratory_lss_vague_steps_are_filtered(self) -> None:
+        class VagueLSSClient(UnifiedLLMClient):
+            def generate_pt(self, prompt: str) -> str:
+                _ = prompt
+                return "What is given:\n1. x + 1 = 2\nWhat must be found or proved:\n1. Find x."
+
+            def generate_pct(self, prompt: str) -> str:
+                _ = prompt
+                return "Candidate approaches:\n1. isolate variable."
+
+            def generate_lss(self, prompt: str) -> str:
+                _ = prompt
+                return (
+                    "Candidate next steps:\n1. derive a relation\n2. solve the equations\n"
+                    "Why each step helps:\n1. proceed\n2. proceed"
+                )
+
+        result = solve(
+            "Vague LSS filtering demo",
+            config=SolveConfig(exploratory_search=True, enable_phase6_synthesis=False),
+            client=VagueLSSClient(),
+        )
+        self.assertTrue(any(item.startswith("exploratory_search ") for item in result.policy_trace))
+
     def test_pct_answer_candidate_can_short_circuit_before_lss(self) -> None:
         class PCTAnswerClient(UnifiedLLMClient):
             def generate_pt(self, prompt: str) -> str:

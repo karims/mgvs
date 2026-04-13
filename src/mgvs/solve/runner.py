@@ -813,7 +813,34 @@ def _score_extracted_move(problem_text: str, move: ExtractedCandidateMove) -> fl
         score += 0.5
     if move.what_it_establishes.strip():
         score += 0.4
+    vague_phrases = (
+        "derive a relation",
+        "use substitution",
+        "solve the equations",
+        "check consistency",
+    )
+    if any(phrase in text for phrase in vague_phrases):
+        score -= 1.5
     return score
+
+
+def _is_vague_lss_move(move_text: str) -> bool:
+    """Return whether an LSS move is generic/vague and should be filtered/downranked."""
+
+    lowered = move_text.strip().lower()
+    if not lowered:
+        return True
+    vague_phrases = (
+        "derive a relation",
+        "use substitution",
+        "solve the equations",
+        "check consistency",
+    )
+    if any(phrase in lowered for phrase in vague_phrases):
+        return True
+    if not any(token in lowered for token in ("=", "<=", ">=", "->", "substitute", "eliminate", "target", "derive")):
+        return True
+    return False
 
 
 def _extract_candidate_moves_from_traces(
@@ -845,6 +872,9 @@ def _extract_candidate_moves_from_traces(
     lss_whys = lss_sections.get("why each step helps", [])
     lss_establish = lss_sections.get("what each step would establish", [])
     for index, move_text in enumerate(lss_moves):
+        if _is_vague_lss_move(move_text):
+            _debug_runtime_print(f"[runner][explore] lss_move_filtered reason=vague move={move_text!r}")
+            continue
         move = ExtractedCandidateMove(
             move_text=move_text,
             why_it_helps=lss_whys[index] if index < len(lss_whys) else "",

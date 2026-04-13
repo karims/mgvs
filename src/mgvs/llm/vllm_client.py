@@ -44,6 +44,13 @@ def _phase1_trace_warn(stage: str, reason: str) -> None:
     print(f"[PHASE1_TRACE][WARN][{stage}] {reason}")
 
 
+def _looks_like_pt_trace_text(text: str) -> bool:
+    """Return whether content resembles sectioned PT free-text output."""
+
+    lowered = text.lower()
+    return "what is given" in lowered and "what must be found or proved" in lowered
+
+
 def _redacted_headers(headers: dict[str, str]) -> dict[str, str]:
     """Return headers safe for debug printing."""
 
@@ -318,6 +325,15 @@ class VLLMClient(UnifiedLLMClient):
             self._last_failure_reason = schema_error
         else:
             self._last_failure_reason = "truncated_output" if finish_reason == "length" else "malformed_json"
+        if stage == STAGE_PT and _looks_like_pt_trace_text(content):
+            # PT_TEXT_EXTRACTOR: preserve sectioned PT text so parser can recover fields
+            # instead of replacing the stage with an empty fallback object.
+            _phase1_trace_warn(
+                stage,
+                "detected sectioned PT trace; forwarding raw text for PT_TEXT_EXTRACTOR recovery",
+            )
+            self._last_failure_reason = "none"
+            return content
         if os.environ.get("MGVS_DEBUG_LLM") == "1":
             if finish_reason == "length":
                 print(f"[{stage}] finish_reason_length_detected")

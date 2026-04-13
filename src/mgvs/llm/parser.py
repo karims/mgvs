@@ -83,6 +83,42 @@ def _trace_section_items(text: str, headings: set[str]) -> list[str]:
     return items
 
 
+def _extract_heading_sections(text: str) -> dict[str, list[str]]:
+    """Return heading-to-items map from sectioned free-text traces."""
+
+    headings = {
+        "restatement",
+        "what is given",
+        "what must be found or proved",
+        "key mathematical structure",
+        "suspicious quantities / invariants / substitutions",
+        "plausible first directions",
+        "candidate approaches",
+        "why each approach might help",
+        "possible intermediate lemmas",
+        "useful reformulations",
+        "risks / dead ends",
+        "candidate next steps",
+        "why each step helps",
+        "what each step would establish",
+        "most promising immediate continuation",
+    }
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in _trace_lines(text):
+        key = line.lower().strip(": ")
+        if key in headings:
+            current = key
+            sections.setdefault(current, [])
+            continue
+        if not current:
+            continue
+        item = _strip_bullet_prefix(line)
+        if item:
+            sections[current].append(item)
+    return sections
+
+
 def _extract_equation_like(values: list[str]) -> list[str]:
     """Collect equation-like strings from free-text traces."""
 
@@ -95,22 +131,91 @@ def _extract_equation_like(values: list[str]) -> list[str]:
 
 
 def _parse_pt_trace_output(text: str) -> PTUpdate:
-    """PHASE1_TRACE: best-effort PT extraction from sectioned free text."""
+    """PT_TEXT_EXTRACTOR: best-effort PT extraction from sectioned free text."""
 
-    given = _trace_section_items(text, {"what is given", "key mathematical structure"})
-    target = _trace_section_items(text, {"what must be found or proved"})
-    suspicious = _trace_section_items(text, {"suspicious quantities / invariants / substitutions"})
-    directions = _trace_section_items(text, {"plausible first directions"})
-    merged_facts = _merge_unique_strings(given, suspicious, directions)
-    equations = _extract_equation_like(merged_facts)
+    sections = _extract_heading_sections(text)
+    restatement = sections.get("restatement", [])
+    given = sections.get("what is given", [])
+    must_find = sections.get("what must be found or proved", [])
+    structure = sections.get("key mathematical structure", [])
+    suspicious = sections.get("suspicious quantities / invariants / substitutions", [])
+    directions = sections.get("plausible first directions", [])
+
+    all_items = _merge_unique_strings(restatement, given, must_find, structure, suspicious, directions)
+    equations = _extract_equation_like(_merge_unique_strings(given, structure, suspicious))
+
+    variable_candidates: list[str] = []
+    for item in _merge_unique_strings(given, must_find, structure):
+        for token in re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", item):
+            lowered = token.lower()
+            if lowered in {
+                "restatement",
+                "what",
+                "given",
+                "must",
+                "found",
+                "proved",
+                "key",
+                "mathematical",
+                "structure",
+                "suspicious",
+                "quantities",
+                "invariants",
+                "substitutions",
+                "plausible",
+                "first",
+                "directions",
+                "the",
+                "and",
+                "for",
+                "from",
+                "with",
+                "find",
+                "prove",
+            }:
+                continue
+            if token not in variable_candidates:
+                variable_candidates.append(token)
+
+    domain_lines = [
+        item
+        for item in _merge_unique_strings(given, structure, suspicious)
+        if any(
+            token in item.lower()
+            for token in (
+                "integer",
+                "positive",
+                "negative",
+                "nonnegative",
+                "domain",
+                "range",
+                "real",
+                "natural",
+            )
+        )
+    ]
+    constraint_lines = [
+        item
+        for item in _merge_unique_strings(given, structure)
+        if item not in domain_lines and (any(tok in item for tok in ("=", "<=", ">=", "<", ">")) or len(item.split()) <= 16)
+    ]
+    goal_items = must_find or restatement[:1]
+    merged_facts = _merge_unique_strings(structure, suspicious, directions)
+
+    # PT_TEXT_EXTRACTOR: compact extraction summary for debugging visibility.
+    print(
+        "[PT_TEXT_EXTRACTOR] "
+        f"goal={goal_items[:1]} vars={len(variable_candidates)} domains={len(domain_lines)} "
+        f"relations={len(equations)} constraints={len(constraint_lines)}"
+    )
     return PTUpdate(
-        symbolic_objects={},
+        symbolic_objects={name: {"kind": "entity"} for name in variable_candidates[:24]},
         current_equations=equations,
-        domain_constraints=[],
+        domain_constraints=_merge_unique_strings(domain_lines, constraint_lines),
         global_constraints=[],
         witness_parameters={},
-        open_goals=target[:4],
-        derived_facts=merged_facts[:12],
+        open_goals=goal_items[:4],
+        derived_facts=merged_facts[:16],
     )
 
 
@@ -347,6 +452,21 @@ def parse_pt_output(text: str) -> PTUpdate:
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_PT, obj)
     if payload_error is not None:
+        # PT_TEXT_EXTRACTOR: allow non-JSON PT traces to recover useful state fields.
+        if text.strip():
+            recovered = _parse_pt_trace_output(text)
+            if (
+                recovered.symbolic_objects
+                or recovered.current_equations
+                or recovered.domain_constraints
+                or recovered.open_goals
+                or recovered.derived_facts
+            ):
+                _phase1_trace_warn(
+                    STAGE_PT,
+                    f"structured parse failed ({payload_error}); PT_TEXT_EXTRACTOR recovered partial state",
+                )
+                return recovered
         if _phase1_trace_enabled():
             # PHASE1_TRACE: Temporary free-text compatibility for PT stage.
             _phase1_trace_warn(

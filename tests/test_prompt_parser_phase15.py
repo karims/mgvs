@@ -51,6 +51,29 @@ class TestPromptParserPhase15(unittest.TestCase):
         self.assertEqual(parsed.global_constraints, [])
         self.assertEqual(parsed.open_goals, [])
 
+    def test_pt_text_extractor_recovers_fields_from_sectioned_trace(self) -> None:
+        parsed = parse_pt_output(
+            "\n".join(
+                [
+                    "Restatement:",
+                    "1. Determine x.",
+                    "What is given:",
+                    "1. x + 1 = 2",
+                    "2. x is an integer.",
+                    "What must be found or proved:",
+                    "1. Find x.",
+                    "Key mathematical structure:",
+                    "1. Linear equation in one variable.",
+                    "Plausible first directions:",
+                    "1. Subtract 1 from both sides.",
+                ]
+            )
+        )
+
+        self.assertIn("x + 1 = 2", parsed.current_equations)
+        self.assertTrue(parsed.open_goals)
+        self.assertTrue(parsed.symbolic_objects)
+
     def test_pct_tactic_extraction(self) -> None:
         payload = {
             "strategy_tags": ["eliminate", "substitute"],
@@ -430,12 +453,16 @@ class TestPromptParserPhase15(unittest.TestCase):
             "Only return a numeric answer when the equations, facts, and constraints are sufficient to justify a unique integer.",
             endgame["instructions"],
         )
-        self.assertIn(
-            "Do not restart the whole problem from scratch unless necessary.",
-            endgame["instructions"],
-        )
-        self.assertIn("Return 1 to 3 short justification strings at most.", endgame["instructions"])
-        self.assertIn("If not ready, list the missing requirements compactly.", endgame["instructions"])
+
+    def test_lss_context_filters_strong_domain_tags_when_fallback_only(self) -> None:
+        state = create_initial_state("Find n", "integer")
+        state.strategy_tags = ["llm_fallback", "modular_casework", "parity_check", "safe_tag"]
+        payload = json.loads(build_lss_prompt(state, max_candidates=2))
+        tags = payload["context"]["strategy_tags"]
+        self.assertIn("llm_fallback", tags)
+        self.assertIn("safe_tag", tags)
+        self.assertNotIn("modular_casework", tags)
+        self.assertNotIn("parity_check", tags)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,18 @@ def _pt_target(state: ReasoningState) -> str:
     return state.open_goals[0] if state.open_goals else ""
 
 
+def _lss_strategy_tags(state: ReasoningState) -> list[str]:
+    """Return LSS strategy tags with conservative fallback sanitization."""
+
+    tags = list(state.strategy_tags)
+    # PHASE3_MOVE_EXTRACTION: when fallback tags are present, avoid forcing strong
+    # domain priors into LSS context unless backed by concrete PT structure.
+    if "llm_fallback" in tags and not state.current_equations and not state.domain_constraints:
+        blocked = ("modular", "parity", "divisibility", "number_theory")
+        tags = [tag for tag in tags if not any(token in tag.lower() for token in blocked)]
+    return tags
+
+
 def build_pt_prompt(raw_problem: str, target_type: str) -> str:
     """PT extracts a structured base state and does no solving."""
 
@@ -127,6 +139,13 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
         "contract": PCTContractVersion,
         "task": "structured_state_strengthening_trace",
         "constraints": {"max_tactics": max_tactics},
+        "limits": {
+            "candidate_approaches_max": 2,
+            "possible_intermediate_lemmas_max": 2,
+            "useful_reformulations_max": 2,
+            "risks_max": 2,
+            "one_sentence_per_item": True,
+        },
         "context": context,
         "output_format": {
             "required_sections": [
@@ -181,6 +200,11 @@ def build_pct_prompt(state: ReasoningState, *, max_tactics: int = DEFAULT_PCT_MA
             "Return sectioned free-text notes using exactly the required headings.",
             "Keep each section concise and mathematically serious.",
             "Prefer numbered items for candidate approaches and lemmas.",
+            "At most 2 candidate approaches.",
+            "At most 2 possible intermediate lemmas.",
+            "At most 2 useful reformulations.",
+            "At most 2 risks/dead ends.",
+            "Each listed item must be one short sentence.",
         ],
     }
     return _json_block(contract)
@@ -198,7 +222,7 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
         "pt_target": _pt_target(state),
         "current_equations": state.current_equations,
         "open_goals": state.open_goals,
-        "strategy_tags": state.strategy_tags,
+        "strategy_tags": _lss_strategy_tags(state),
         "derived_facts": state.derived_facts,
         "branch_assignments": state.branch_assignments,
     }
@@ -288,6 +312,9 @@ def build_lss_prompt(state: ReasoningState, max_candidates: int) -> str:
             "List at most two candidate next steps.",
             "Keep each candidate concrete and directly actionable.",
             "Prefer numbered next steps (1., 2.) for stable parsing.",
+            "Each candidate next step must be atomic.",
+            "Each candidate must include an explicit equation, substitution, or exact derived target.",
+            "Do not output generic steps such as: derive a relation, use substitution, solve the equations, check consistency.",
         ],
     }
     return _json_block(contract)
