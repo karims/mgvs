@@ -130,6 +130,31 @@ def _extract_equation_like(values: list[str]) -> list[str]:
     return equations
 
 
+def _has_useful_pt_update(update: PTUpdate) -> bool:
+    """Return whether PT extraction recovered any meaningful state fields."""
+
+    return bool(
+        update.symbolic_objects
+        or update.current_equations
+        or update.domain_constraints
+        or update.open_goals
+        or update.derived_facts
+    )
+
+
+def _has_useful_pct_update(update: PCTUpdate) -> bool:
+    """Return whether PCT extraction recovered any meaningful state fields."""
+
+    return bool(update.strategy_tags or update.open_goals or update.candidate_equations)
+
+
+def _log_text_first_summary(stage: str, source: str, counts: dict[str, int]) -> None:
+    """Emit compact text-first ingestion summary per stage."""
+
+    parts = " ".join(f"{key}={value}" for key, value in counts.items())
+    print(f"[TEXT_FIRST_HANDOFF][{stage}] source={source} {parts}".strip())
+
+
 def _parse_pt_trace_output(text: str) -> PTUpdate:
     """PT_TEXT_EXTRACTOR: best-effort PT extraction from sectioned free text."""
 
@@ -222,12 +247,13 @@ def _parse_pt_trace_output(text: str) -> PTUpdate:
 def _parse_pct_trace_output(text: str) -> PCTUpdate:
     """PHASE1_TRACE: best-effort PCT extraction from sectioned free text."""
 
-    approaches = _trace_section_items(text, {"candidate approaches"})
-    lemmas = _trace_section_items(text, {"possible intermediate lemmas"})
-    reformulations = _trace_section_items(text, {"useful reformulations"})
-    risks = _trace_section_items(text, {"risks / dead ends"})
+    sections = _extract_heading_sections(text)
+    approaches = sections.get("candidate approaches", [])
+    lemmas = sections.get("possible intermediate lemmas", [])
+    reformulations = sections.get("useful reformulations", [])
+    risks = sections.get("risks / dead ends", [])
     tags = [value.lower().replace(" ", "_")[:48] for value in approaches[:4]]
-    goals = _merge_unique_strings(lemmas, reformulations)
+    goals = _merge_unique_strings(lemmas, reformulations, sections.get("why each approach might help", []))
     equations = _extract_equation_like(_merge_unique_strings(lemmas, reformulations))
     answer_candidate = _extract_answer_candidate_from_text(text)
     if risks:
@@ -243,18 +269,23 @@ def _parse_pct_trace_output(text: str) -> PCTUpdate:
 def _parse_lss_trace_output(text: str) -> list[CandidateAction]:
     """PHASE1_TRACE: best-effort LSS extraction from sectioned free text."""
 
-    steps = _trace_section_items(text, {"candidate next steps"})
-    establishes = _trace_section_items(text, {"what each step would establish"})
-    continuation = _trace_section_items(text, {"most promising immediate continuation"})
-    candidates = _merge_unique_strings(steps, establishes, continuation)
+    sections = _extract_heading_sections(text)
+    steps = sections.get("candidate next steps", [])
+    why = sections.get("why each step helps", [])
+    establishes = sections.get("what each step would establish", [])
+    continuation = sections.get("most promising immediate continuation", [])
+    candidates = _merge_unique_strings(steps, continuation)
     parsed: list[CandidateAction] = []
     for idx, line in enumerate(candidates[:2], start=1):
+        why_text = why[idx - 1] if idx - 1 < len(why) else ""
+        establish_text = establishes[idx - 1] if idx - 1 < len(establishes) else ""
+        added = [item for item in [line, establish_text] if item.strip()]
         parsed.append(
             CandidateAction(
                 action_type=ActionType.DERIVE_RELATION,
                 title=f"phase1_trace_step_{idx}",
-                rationale="PHASE1_TRACE free-text LSS extraction",
-                added_facts=[line],
+                rationale=why_text or "PHASE1_TRACE free-text LSS extraction",
+                added_facts=added,
                 added_constraints=[],
             )
         )
@@ -449,22 +480,42 @@ def _merge_unique_strings(*groups: list[str]) -> list[str]:
 def parse_pt_output(text: str) -> PTUpdate:
     """Parse PT JSON output into structured update fields."""
 
+    # TEXT_FIRST_HANDOFF: PT ingestion prioritizes sectioned free-text extraction.
+    if text.strip():
+        extracted = _parse_pt_trace_output(text)
+        if _has_useful_pt_update(extracted):
+            _log_text_first_summary(
+                STAGE_PT,
+                "text_extractor",
+                {
+                    "vars": len(extracted.symbolic_objects),
+                    "relations": len(extracted.current_equations),
+                    "constraints": len(extracted.domain_constraints),
+                    "goals": len(extracted.open_goals),
+                },
+            )
+            return extracted
+
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_PT, obj)
     if payload_error is not None:
         # PT_TEXT_EXTRACTOR: allow non-JSON PT traces to recover useful state fields.
         if text.strip():
             recovered = _parse_pt_trace_output(text)
-            if (
-                recovered.symbolic_objects
-                or recovered.current_equations
-                or recovered.domain_constraints
-                or recovered.open_goals
-                or recovered.derived_facts
-            ):
+            if _has_useful_pt_update(recovered):
                 _phase1_trace_warn(
                     STAGE_PT,
                     f"structured parse failed ({payload_error}); PT_TEXT_EXTRACTOR recovered partial state",
+                )
+                _log_text_first_summary(
+                    STAGE_PT,
+                    "text_extractor",
+                    {
+                        "vars": len(recovered.symbolic_objects),
+                        "relations": len(recovered.current_equations),
+                        "constraints": len(recovered.domain_constraints),
+                        "goals": len(recovered.open_goals),
+                    },
                 )
                 return recovered
         if _phase1_trace_enabled():
@@ -481,6 +532,7 @@ def parse_pt_output(text: str) -> PTUpdate:
                 )
             return fallback
         _stage_parse_error(STAGE_PT, payload_error)
+        _log_text_first_summary(STAGE_PT, "fallback", {"vars": 0, "relations": 0, "constraints": 0, "goals": 0})
         return PTUpdate()
     objects = _string_list(_first_present(obj, ["objects", "entities"]))
     variables = _string_list(_first_present(obj, ["variables"]))
@@ -492,7 +544,7 @@ def parse_pt_output(text: str) -> PTUpdate:
 
     if objects or variables or unknowns_remaining or target or relations or domains or flat_constraints:
         entity_names = _merge_unique_strings(objects, variables, unknowns_remaining)
-        return PTUpdate(
+        update = PTUpdate(
             symbolic_objects={name: {"kind": "entity"} for name in entity_names},
             current_equations=relations,
             domain_constraints=_merge_unique_strings(domains, flat_constraints),
@@ -501,6 +553,17 @@ def parse_pt_output(text: str) -> PTUpdate:
             open_goals=[target] if target else [],
             derived_facts=[],
         )
+        _log_text_first_summary(
+            STAGE_PT,
+            "text_extractor",
+            {
+                "vars": len(update.symbolic_objects),
+                "relations": len(update.current_equations),
+                "constraints": len(update.domain_constraints),
+                "goals": len(update.open_goals),
+            },
+        )
+        return update
 
     constraints_obj = obj.get("constraints")
     domain_constraints: list[str] = []
@@ -515,7 +578,7 @@ def parse_pt_output(text: str) -> PTUpdate:
     open_goals = _string_list(_first_present(obj, ["open_goals", "targets", "focus_goals"]))
     derived_facts = _string_list(_first_present(obj, ["facts", "derived_facts"]))
 
-    return PTUpdate(
+    update = PTUpdate(
         symbolic_objects=_dict_payload(obj.get("symbolic_objects")),
         current_equations=_string_list(_first_present(obj, ["current_equations", "equations"])),
         domain_constraints=domain_constraints,
@@ -524,6 +587,17 @@ def parse_pt_output(text: str) -> PTUpdate:
         open_goals=open_goals,
         derived_facts=derived_facts,
     )
+    _log_text_first_summary(
+        STAGE_PT,
+        "text_extractor",
+        {
+            "vars": len(update.symbolic_objects),
+            "relations": len(update.current_equations),
+            "constraints": len(update.domain_constraints),
+            "goals": len(update.open_goals),
+        },
+    )
+    return update
 
 
 def apply_pt_update(state: ReasoningState, update: PTUpdate) -> ReasoningState:
@@ -545,6 +619,21 @@ def apply_pt_update(state: ReasoningState, update: PTUpdate) -> ReasoningState:
 def parse_pct_output(text: str) -> PCTUpdate:
     """Parse PCT JSON output into structured update fields."""
 
+    # TEXT_FIRST_HANDOFF: PCT ingestion prioritizes sectioned free-text extraction.
+    if text.strip():
+        extracted = _parse_pct_trace_output(text)
+        if _has_useful_pct_update(extracted):
+            _log_text_first_summary(
+                STAGE_PCT,
+                "text_extractor",
+                {
+                    "approaches": len(extracted.strategy_tags),
+                    "open_goals": len(extracted.open_goals),
+                    "reformulations": len(extracted.candidate_equations),
+                },
+            )
+            return extracted
+
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_PCT, obj)
     if payload_error is not None:
@@ -560,19 +649,39 @@ def parse_pct_output(text: str) -> PCTUpdate:
                     STAGE_PCT,
                     "free-text PCT fallback extracted minimal/no structured signals",
                 )
+            _log_text_first_summary(
+                STAGE_PCT,
+                "text_extractor" if _has_useful_pct_update(fallback) else "fallback",
+                {
+                    "approaches": len(fallback.strategy_tags),
+                    "open_goals": len(fallback.open_goals),
+                    "reformulations": len(fallback.candidate_equations),
+                },
+            )
             return fallback
         _stage_parse_error(STAGE_PCT, payload_error)
+        _log_text_first_summary(STAGE_PCT, "fallback", {"approaches": 0, "open_goals": 0, "reformulations": 0})
         return PCTUpdate()
 
     answer_candidate = _int_or_none(obj.get("answer_candidate"))
     if obj.get("answer_candidate") is not None and answer_candidate is None:
         _stage_parse_error(STAGE_PCT, "schema_mismatch", details="answer_candidate_not_integer")
-    return PCTUpdate(
+    update = PCTUpdate(
         strategy_tags=_string_list(obj.get("strategy_tags")),
         open_goals=_string_list(obj.get("open_goals")),
         candidate_equations=_string_list(obj.get("candidate_equations")),
         answer_candidate=answer_candidate,
     )
+    _log_text_first_summary(
+        STAGE_PCT,
+        "text_extractor",
+        {
+            "approaches": len(update.strategy_tags),
+            "open_goals": len(update.open_goals),
+            "reformulations": len(update.candidate_equations),
+        },
+    )
+    return update
 
 
 def apply_pct_update(state: ReasoningState, update: PCTUpdate) -> ReasoningState:
@@ -642,6 +751,17 @@ def _looks_generic_advice(text: str) -> bool:
 def parse_lss_output(text: str) -> list[CandidateAction]:
     """Parse LSS JSON output into bounded candidate actions."""
 
+    # TEXT_FIRST_HANDOFF: LSS ingestion prioritizes sectioned free-text extraction.
+    if text.strip():
+        extracted = _parse_lss_trace_output(text)
+        if extracted:
+            _log_text_first_summary(
+                STAGE_LSS,
+                "text_extractor",
+                {"candidate_steps": len(extracted)},
+            )
+            return extracted
+
     obj = _load_json_object(text)
     payload_error = validate_stage_payload(STAGE_LSS, obj)
     if payload_error is not None:
@@ -657,6 +777,11 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
                     STAGE_LSS,
                     "free-text LSS fallback produced zero candidate actions",
                 )
+            _log_text_first_summary(
+                STAGE_LSS,
+                "text_extractor" if fallback else "fallback",
+                {"candidate_steps": len(fallback)},
+            )
             return fallback
         _stage_parse_error(STAGE_LSS, payload_error)
     if os.environ.get("MGVS_DEBUG_PARSER") == "1":
@@ -672,6 +797,7 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
     if not isinstance(raw_actions, list):
         if os.environ.get("MGVS_DEBUG_PARSER") == "1":
             print("parse_lss_output: raw_actions is not a list ->", raw_actions)
+        _log_text_first_summary(STAGE_LSS, "fallback", {"candidate_steps": 0})
         return []
 
     parsed: list[CandidateAction] = []
@@ -727,6 +853,7 @@ def parse_lss_output(text: str) -> list[CandidateAction]:
         print("parse_lss_output: parsed action count =", len(parsed))
         for index, action in enumerate(parsed):
             print(f"  action[{index}] =", action)
+    _log_text_first_summary(STAGE_LSS, "text_extractor" if parsed else "fallback", {"candidate_steps": len(parsed)})
     return parsed
 
 

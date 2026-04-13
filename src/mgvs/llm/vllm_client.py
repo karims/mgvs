@@ -284,6 +284,19 @@ class VLLMClient(UnifiedLLMClient):
                 print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
             return None
 
+        if stage in {STAGE_PT, STAGE_PCT, STAGE_LSS}:
+            # TEXT_FIRST_HANDOFF: PT/PCT/LSS now treat readable sectioned text as
+            # primary success output. Structured JSON validation is no longer the
+            # gating success condition for these stages.
+            if os.environ.get("MGVS_DEBUG_LLM") == "1":
+                print(
+                    f"[{stage}] text_first_handoff=true "
+                    f"selected_response_field={selected_field} finish_reason={finish_reason}"
+                )
+                print(f"===== GENERATE_ONCE {stage.upper()} END =====\n")
+            self._last_failure_reason = "none"
+            return content
+
         if _phase1_trace_enabled() and stage in _PHASE1_TRACE_STAGES:
             # PHASE1_TRACE: Temporary passthrough to preserve readable free-text
             # stage traces for PT/PCT/LSS debugging without strict JSON gating.
