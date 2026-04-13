@@ -397,7 +397,15 @@ def _persist_phase1_trace_artifact(
                     f"   source_stage={move.get('source_stage', '')} score={move.get('score', '')}"
                 )
             moves_text = "\n".join(rendered)
-        branch_text = "\n".join(attempt_context.branch_decisions) if attempt_context.branch_decisions else "(none)"
+        branch_expansions_text = (
+            "\n".join(attempt_context.branch_decisions) if attempt_context.branch_decisions else "(none)"
+        )
+        branch_scores_text = "\n".join(attempt_context.branch_scores) if attempt_context.branch_scores else "(none)"
+        pruning_text = (
+            "\n".join(attempt_context.pruning_decisions) if attempt_context.pruning_decisions else "(none)"
+        )
+        best_branch_text = attempt_context.best_branch_summary or "(none)"
+        synthesis_text = attempt_context.final_synthesis_text.strip() or "(none)"
         body = "\n".join(
             [
                 "# PHASE1_TRACE RUN",
@@ -417,11 +425,20 @@ def _persist_phase1_trace_artifact(
                 "## EXTRACTED CANDIDATE MOVES",
                 moves_text,
                 "",
-                "## BRANCH EXPANSION DECISIONS",
-                branch_text,
+                "## BRANCH EXPANSIONS",
+                branch_expansions_text,
                 "",
-                "## FINAL SYNTHESIZED ATTEMPT",
-                attempt_context.final_synthesis_text.strip() or "(none)",
+                "## BRANCH SCORES",
+                branch_scores_text,
+                "",
+                "## PRUNING DECISIONS",
+                pruning_text,
+                "",
+                "## BEST BRANCH",
+                best_branch_text,
+                "",
+                "## FINAL SYNTHESIS",
+                synthesis_text,
                 "",
                 "## FINAL OUTPUT / FINAL ANSWER",
                 f"- termination_reason: {result.termination_reason}",
@@ -659,6 +676,9 @@ class RunAttemptContext:
     # PHASE3_MOVE_EXTRACTION / PHASE5_BRANCH_SEARCH / PHASE6_SYNTHESIS trace state.
     extracted_candidate_moves: list[dict[str, object]] = field(default_factory=list)
     branch_decisions: list[str] = field(default_factory=list)
+    branch_scores: list[str] = field(default_factory=list)
+    pruning_decisions: list[str] = field(default_factory=list)
+    best_branch_summary: str = ""
     final_synthesis_text: str = ""
 
 
@@ -922,6 +942,9 @@ def _run_shallow_branch_search(
         for branch in branches[:expand_top]:
             for move in all_moves[:max_initial]:
                 if move.move_text in branch.chosen_move_history:
+                    attempt_context.pruning_decisions.append(
+                        f"depth={depth} prune=duplicate_move move={move.move_text}"
+                    )
                     continue
                 next_branch = ExploratoryReasoningState(
                     problem_text=branch.problem_text,
@@ -940,16 +963,30 @@ def _run_shallow_branch_search(
                 attempt_context.branch_decisions.append(
                     f"depth={depth} choose={move.move_text} score={next_branch.score:.2f}"
                 )
+                attempt_context.branch_scores.append(
+                    f"depth={depth} branch_history={next_branch.chosen_move_history} score={next_branch.score:.2f}"
+                )
         if not expanded:
+            attempt_context.pruning_decisions.append(f"depth={depth} prune=no_expandable_branches")
             break
         expanded.sort(key=lambda item: item.score, reverse=True)
+        if len(expanded) > expand_top:
+            pruned = expanded[expand_top:]
+            for item in pruned:
+                attempt_context.pruning_decisions.append(
+                    f"depth={depth} prune=top_k_cut score={item.score:.2f} branch_history={item.chosen_move_history}"
+                )
         branches = expanded[:expand_top]
         _debug_runtime_print(
             f"[runner][explore] depth={depth} kept={len(branches)} "
             f"top_scores={[round(branch.score, 2) for branch in branches]}"
         )
 
-    return branches[0] if branches else root
+    best = branches[0] if branches else root
+    attempt_context.best_branch_summary = (
+        f"depth={best.depth} score={best.score:.2f} history={best.chosen_move_history}"
+    )
+    return best
 
 
 def _synthesize_final_attempt(

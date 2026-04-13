@@ -83,6 +83,12 @@ class TestSolvePhase6(unittest.TestCase):
             self.assertIn("## PT RAW OUTPUT", text)
             self.assertIn("## PCT RAW OUTPUT", text)
             self.assertIn("## LSS RAW OUTPUT", text)
+            self.assertIn("## EXTRACTED CANDIDATE MOVES", text)
+            self.assertIn("## BRANCH EXPANSIONS", text)
+            self.assertIn("## BRANCH SCORES", text)
+            self.assertIn("## PRUNING DECISIONS", text)
+            self.assertIn("## BEST BRANCH", text)
+            self.assertIn("## FINAL SYNTHESIS", text)
             self.assertIn("## FINAL OUTPUT / FINAL ANSWER", text)
             self.assertIn("x + 1 = 2", text)
 
